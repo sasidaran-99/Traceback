@@ -1,11 +1,14 @@
 package com.traceback.core.git;
 
+import org.springframework.stereotype.Component;
+
 import java.util.List;
 import java.util.Set;
 
 /**
  * Categorizes commit changes by subsystem and identifies non-functional or cosmetic modifications.
  */
+@Component
 public class GitCommitAnalyzer {
 
     private static final Set<String> COSMETIC_EXTENSIONS = Set.of(

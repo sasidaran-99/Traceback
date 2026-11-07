@@ -23,7 +23,7 @@ class GitCollectorTest {
         // Non-existent directory
         assertThatThrownBy(() -> collector.validateRepositoryPath(tempDir.resolve("non_existent").toString()))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("does not exist");
+                .hasMessageContaining("does not exist or is inaccessible");
 
         // Directory without .git
         assertThatThrownBy(() -> collector.validateRepositoryPath(tempDir.toString()))
@@ -35,6 +35,47 @@ class GitCollectorTest {
             Path validPath = collector.validateRepositoryPath(tempDir.toString());
             assertThat(validPath).isEqualTo(tempDir.toRealPath());
         }
+    }
+
+    @Test
+    @DisplayName("Should enforce strict repository root security boundary and reject unauthorized paths")
+    void shouldEnforceSecurityBoundary(@TempDir Path baseDir) throws Exception {
+        Path authorizedRoot = baseDir.resolve("authorized_zone");
+        Path unauthorizedRoot = baseDir.resolve("unauthorized_zone");
+        Files.createDirectories(authorizedRoot);
+        Files.createDirectories(unauthorizedRoot);
+
+        // Git repo inside authorized zone
+        Path authorizedRepo = authorizedRoot.resolve("service-repo");
+        Files.createDirectories(authorizedRepo);
+        try (Git git = Git.init().setDirectory(authorizedRepo.toFile()).call()) {
+            // empty
+        }
+
+        // Git repo inside unauthorized zone
+        Path unauthorizedRepo = unauthorizedRoot.resolve("sensitive-repo");
+        Files.createDirectories(unauthorizedRepo);
+        try (Git git = Git.init().setDirectory(unauthorizedRepo.toFile()).call()) {
+            // empty
+        }
+
+        // Configure collector with ONLY authorizedRoot
+        GitCollector securedCollector = new GitCollector(List.of(authorizedRoot.toString()));
+
+        // Authorized repo succeeds
+        Path validated = securedCollector.validateRepositoryPath(authorizedRepo.toString());
+        assertThat(validated).isEqualTo(authorizedRepo.toRealPath());
+
+        // Unauthorized repo throws SecurityException without leaking sensitive details
+        assertThatThrownBy(() -> securedCollector.validateRepositoryPath(unauthorizedRepo.toString()))
+                .isInstanceOf(SecurityException.class)
+                .hasMessageContaining("Access denied: Repository path is not within the authorized repository roots");
+
+        // Directory traversal attempt (e.g. authorized_zone/../unauthorized_zone/sensitive-repo)
+        String traversalPath = authorizedRoot.toString() + "/../unauthorized_zone/sensitive-repo";
+        assertThatThrownBy(() -> securedCollector.validateRepositoryPath(traversalPath))
+                .isInstanceOf(SecurityException.class)
+                .hasMessageContaining("Access denied: Repository path is not within the authorized repository roots");
     }
 
     @Test

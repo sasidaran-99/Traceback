@@ -156,6 +156,19 @@ class AgentInvestigationApiTest {
                 .andExpect(jsonPath("$[2].stepName").value("Bifrost AI Gateway Reasoning"))
                 .andExpect(jsonPath("$[3].stepName").value("Evidence Grounding & Claim Validation"))
                 .andExpect(jsonPath("$[4].stepName").value("Final Verdict"));
+
+        // Step 5: Verify route aliases resolve correctly
+        mockMvc.perform(get("/api/investigations/agent/" + investigationId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.investigationId").value(investigationId));
+
+        mockMvc.perform(get("/api/investigations/agent/" + investigationId + "/research"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(1)));
+
+        mockMvc.perform(get("/api/investigations/agent/" + investigationId + "/audit"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(5)));
     }
 
     @Test

@@ -16,6 +16,8 @@ import org.eclipse.jgit.treewalk.CanonicalTreeParser;
 import org.eclipse.jgit.treewalk.EmptyTreeIterator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.io.ByteArrayOutputStream;
@@ -32,6 +34,7 @@ import java.util.Map;
 
 /**
  * Collects Git commit history, file diffs, and configuration modifications from local Git repositories.
+ * Enforces strict boundary authorization to prevent arbitrary filesystem access or directory traversal.
  */
 @Component
 public class GitCollector {
@@ -40,43 +43,134 @@ public class GitCollector {
 
     private final GitDiffAnalyzer diffAnalyzer;
     private final GitCommitAnalyzer commitAnalyzer;
+    private final List<Path> allowedRoots;
 
     public GitCollector() {
-        this.diffAnalyzer = new GitDiffAnalyzer();
-        this.commitAnalyzer = new GitCommitAnalyzer();
+        this(new GitDiffAnalyzer(), new GitCommitAnalyzer(), (List<String>) null);
+    }
+
+    @Autowired
+    public GitCollector(
+            @Value("${traceback.security.allowed-repo-roots:}") String allowedRootsConfig
+    ) {
+        this(new GitDiffAnalyzer(), new GitCommitAnalyzer(), parseRoots(allowedRootsConfig));
+    }
+
+    public GitCollector(List<String> allowedRoots) {
+        this(new GitDiffAnalyzer(), new GitCommitAnalyzer(), allowedRoots);
     }
 
     public GitCollector(GitDiffAnalyzer diffAnalyzer, GitCommitAnalyzer commitAnalyzer) {
-        this.diffAnalyzer = diffAnalyzer;
-        this.commitAnalyzer = commitAnalyzer;
+        this(diffAnalyzer, commitAnalyzer, (List<String>) null);
+    }
+
+    public GitCollector(GitDiffAnalyzer diffAnalyzer, GitCommitAnalyzer commitAnalyzer, List<String> allowedRoots) {
+        this.diffAnalyzer = diffAnalyzer != null ? diffAnalyzer : new GitDiffAnalyzer();
+        this.commitAnalyzer = commitAnalyzer != null ? commitAnalyzer : new GitCommitAnalyzer();
+        this.allowedRoots = new ArrayList<>();
+        initAllowedRoots(allowedRoots);
+    }
+
+    private static List<String> parseRoots(String config) {
+        if (config == null || config.trim().isEmpty()) {
+            return Collections.emptyList();
+        }
+        String[] parts = config.split("[,;]");
+        List<String> list = new ArrayList<>();
+        for (String part : parts) {
+            String trimmed = part.trim();
+            if (!trimmed.isEmpty()) {
+                list.add(trimmed);
+            }
+        }
+        return list;
+    }
+
+    private void initAllowedRoots(List<String> roots) {
+        if (roots != null && !roots.isEmpty()) {
+            for (String r : roots) {
+                addRoot(Path.of(r));
+            }
+        } else {
+            // Default restricted boundary: current project root and system temp directory
+            addRoot(Path.of("."));
+            addRoot(Path.of(System.getProperty("java.io.tmpdir")));
+        }
+        log.info("GitCollector initialized with {} authorized repository root(s): {}",
+                this.allowedRoots.size(), this.allowedRoots);
+    }
+
+    private void addRoot(Path path) {
+        Path norm = path.toAbsolutePath().normalize();
+        if (!this.allowedRoots.contains(norm)) {
+            this.allowedRoots.add(norm);
+        }
+        try {
+            Path real = norm.toRealPath();
+            if (!this.allowedRoots.contains(real)) {
+                this.allowedRoots.add(real);
+            }
+        } catch (IOException ignored) {
+        }
+    }
+
+    public List<Path> getAllowedRoots() {
+        return Collections.unmodifiableList(allowedRoots);
+    }
+
+    public boolean isPathAuthorized(Path path) {
+        if (allowedRoots.isEmpty()) {
+            return false;
+        }
+        Path normalized = path.toAbsolutePath().normalize();
+        for (Path root : allowedRoots) {
+            if (normalized.equals(root) || normalized.startsWith(root)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
-     * Validates that the provided path exists, is a valid directory, and contains a Git repository.
-     * Prevents unauthorized directory traversal.
+     * Validates that the provided path exists, is within an authorized repository root,
+     * is a valid directory, and contains a Git repository.
+     * Prevents unauthorized directory traversal, symlink breakout, or arbitrary host filesystem inspection.
      */
     public Path validateRepositoryPath(String repositoryPath) {
         if (repositoryPath == null || repositoryPath.trim().isEmpty()) {
             throw new IllegalArgumentException("Repository path cannot be null or empty");
         }
 
-        Path path;
+        Path realPath;
         try {
-            path = Path.of(repositoryPath).toRealPath();
+            realPath = Path.of(repositoryPath).toRealPath();
         } catch (IOException e) {
-            throw new IllegalArgumentException("Repository path does not exist or cannot be accessed: " + repositoryPath, e);
+            // Path does not exist or cannot be accessed on disk.
+            // Check normalized path against authorized roots to safely reject unauthorized probes
+            Path raw = Path.of(repositoryPath).toAbsolutePath().normalize();
+            if (!isPathAuthorized(raw)) {
+                log.warn("Access denied: Repository path {} is outside authorized roots", repositoryPath);
+                throw new SecurityException("Access denied: Repository path is not within the authorized repository roots");
+            }
+            throw new IllegalArgumentException("Repository path does not exist or is inaccessible");
         }
 
-        if (!Files.isDirectory(path)) {
-            throw new IllegalArgumentException("Repository path is not a directory: " + path);
+        // Boundary check on canonical real path
+        if (!isPathAuthorized(realPath)) {
+            log.warn("Access denied: Resolved real path {} is outside authorized roots", realPath);
+            throw new SecurityException("Access denied: Repository path is not within the authorized repository roots");
         }
 
-        Path gitDir = path.resolve(".git");
+        if (!Files.isDirectory(realPath)) {
+            throw new IllegalArgumentException("Repository path is not a directory");
+        }
+
+        Path gitDir = realPath.resolve(".git");
         if (!Files.exists(gitDir)) {
-            throw new IllegalArgumentException("Directory is not a Git repository (missing .git directory): " + path);
+            throw new IllegalArgumentException("Directory is not a Git repository (missing .git directory)");
         }
 
-        return path;
+        return realPath;
     }
 
     /**

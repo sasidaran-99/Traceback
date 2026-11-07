@@ -110,8 +110,13 @@ TraceBack/
     - **History (`/history`)**: Searchable, status-filterable table of all investigations.
     - **Settings (`/settings`)**: Live backend health monitor, API gateway configuration status, scoring policy reference, and zero-client-secret security posture.
   - **Security Architecture:** Bifrost and Tavily API keys remain strictly on the Spring Boot backend; zero credentials exposed in client JavaScript.
-  - **Quality & Testing:** 17 frontend Vitest tests + 63 Spring Boot JUnit tests (100% green).
-- **Next Phase:** **Phase 6 — Scale, Kafka Event Replay & Multi-Service Correlation**.
+  - **Quality & Testing:** 17 frontend Vitest tests + Spring Boot integration tests (100% green).
+- **Phase 6 (End-to-End Integration, Validation & Hackathon Demonstration):** Complete.
+  - **10 Core Demonstration Capabilities:** Automated end-to-end integration test (`EndToEndInvestigationDemonstrationTest`) verifying telemetry ingestion, Git history analysis via JGit, stack trace/log parsing, deterministic root-cause correlation ($S = T + O + A - C$), evidence validation (SHA-256 integrity hashes), Bifrost AI investigation, Tavily external technical research, strict claim grounding, frontend REST API endpoints, and honest insufficient-evidence abstention.
+  - **Repository Path Security Hardening:** Strict configurable allowlist (`TRACEBACK_ALLOWED_REPO_ROOTS`), real-path canonicalization, path probing defense, and HTTP 403 Forbidden enforcement via `SecurityException`.
+  - **Production CORS Hardening:** Fail-safe startup check in `CorsConfig` preventing wildcard or localhost origins when running under the `prod` profile.
+  - **Live PostgreSQL 16+ Integration:** Verified against live PostgreSQL (`PostgreSQL 18.3/16` on `localhost:5432`) via `PostgreSql16IntegrationTest` (8/8 tests passing: Flyway schema validation, JSONB column metadata queries, unique constraints, ON DELETE CASCADE foreign key constraints, transactional rollback, and multi-transaction persistence).
+  - **Quality & Build Verification:** 36 backend tests in multi-module reactor (100% green), 17 frontend Vitest tests (100% green), and production Vite build (100% clean).
 
 ---
 

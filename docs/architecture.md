@@ -662,20 +662,40 @@ The backend provides dual support for canonical RESTful collection paths and con
 | `GET /api/health` | — | `HealthController` | Engine health check & status |
 
 #### 2. Repository Path Security & Host Trust Boundary
-- **Canonicalization:** In `GitCollector.validateRepositoryPath()`, `Path.of(repositoryPath).toRealPath()` resolves all symlinks, relative segments (`..`), and aliases to a canonical path on the local filesystem.
-- **Git Metadata Verification:** The service strictly requires `Files.isDirectory(path)` and `Files.exists(path.resolve(".git"))`. Paths lacking a valid `.git` directory are rejected with `IllegalArgumentException` (HTTP 400 Bad Request).
-- **Host Trust Boundary:** The repository path is accessed by the Spring Boot server process on the host running the backend (or inside a container volume mount). It is not uploaded from the web browser. The frontend form explicitly documents this boundary.
+- **Configurable Boundary Allowlist:** `GitCollector` enforces that any analyzed repository path must reside within an explicitly authorized filesystem root (configured via `TRACEBACK_ALLOWED_REPO_ROOTS`). By default, access is strictly confined to the application working directory and system temporary directory.
+- **Canonicalization & Boundary Enforcement:** `Path.of(repositoryPath).toRealPath()` resolves all symlinks, relative traversal sequences (`..`), and aliases. Both the normalized absolute path and the resolved real path are verified against the authorized roots list. If an unauthorized path or probing attempt is detected, a `SecurityException` is thrown and mapped by `GlobalExceptionHandler` to **HTTP 403 Forbidden**.
+- **Probing Defense:** Path authorization is verified prior to disk probing, preventing unauthorized attackers from learning file existence through error message timing or differential exceptions.
+- **Git Metadata Verification:** The service strictly requires `Files.isDirectory(path)` and `Files.exists(path.resolve(".git"))`. Paths within the authorized boundary lacking a valid `.git` directory are rejected with `IllegalArgumentException` (HTTP 400 Bad Request).
 
 #### 3. Investigation Persistence & Session Cache
-- **In-Memory Store:** In Phase 5, active investigations (`InvestigationResult`) and agent reports (`InvestigationAgentReport`) are stored in thread-safe `ConcurrentHashMap` collections (`investigationStore` and `reportStore`) inside the Spring Boot application context.
-- **Persistence Boundary:** Ingested events, relationships, and incidents are persisted to PostgreSQL 16 via Spring Data JPA entities (`Event`, `Relationship`, `Incident`). However, investigation result graphs are currently session-scoped and do not survive application restarts. Full investigation persistence and event replay are scheduled for Phase 6 (Kafka event replay).
+- **In-Memory Store:** Active investigations (`InvestigationResult`) and agent reports (`InvestigationAgentReport`) are stored in thread-safe `ConcurrentHashMap` collections (`investigationStore` and `reportStore`) inside the Spring Boot application context.
+- **Persistence Boundary:** Ingested events, relationships, and incidents are persisted to PostgreSQL 16 via Spring Data JPA entities (`Event`, `Relationship`, `Incident`).
 - **Dashboard Honesty:** The dashboard reflects real backend state: when no investigations have run, history displays 0 records with an empty-state guidance panel rather than fabricated data.
 
-#### 4. CORS Security Configuration
+#### 4. CORS Security Configuration & Production Fail-Safe
 - [`CorsConfig.java`](file:///c:/Users/Sasidaran/Desktop/Sasidaran/Projects/TraceBack/traceback-api/src/main/java/com/traceback/api/config/CorsConfig.java) uses `@Value("${traceback.cors.allowed-origin-patterns:http://localhost:[*],http://127.0.0.1:[*]}")`.
 - Local development works out-of-the-box with Vite (`http://localhost:5173`).
-- In production, setting environment variable `CORS_ALLOWED_ORIGIN_PATTERNS` restricts browser origins to approved company domains, preventing unintentional permissive localhost access in production.
+- **Production Fail-Safe:** When running under the `prod` Spring profile, `CorsConfig` validates that origin patterns do not contain wildcards (`*`) or `localhost`/`127.0.0.1`. If an insecure origin configuration is detected in production, the application fails to start immediately with an `IllegalStateException`, enforcing secure-by-default deployment.
 
-#### 5. Database Test Setup vs. Production Environment
-- **Production:** Configured for PostgreSQL 16 via `docker-compose.yml` and `application.yml` (`jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:traceback_db}`) with HikariCP connection pooling and Flyway migrations (`V1__initial_schema.sql`).
-- **Automated Tests:** `FlywayMigrationTest` and `RepositoryIntegrationTest` execute against **in-memory H2 in PostgreSQL compatibility mode (`jdbc:h2:mem:...;MODE=PostgreSQL`)** to ensure fast, zero-dependency, hermetic builds without requiring a live external Docker daemon during test execution. Live PostgreSQL 16 container testing is verified via Docker Compose for production deployments.
+#### 5. Database Verification: Live PostgreSQL 16+ & Hermetic H2
+- **Production & Live Verification:** Configured for PostgreSQL 16+ via `docker-compose.yml` and `application.yml` (`jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:traceback_db}`) with HikariCP connection pooling and Flyway migrations (`V1__initial_schema.sql`). Live PostgreSQL 16+ integration is verified via `PostgreSql16IntegrationTest` (8/8 tests covering Flyway validation, JSONB metadata queries, unique constraints, ON DELETE CASCADE, transactional rollback, and multi-transaction persistence).
+- **Automated Tests:** Hermetic test suites execute against in-memory H2 in PostgreSQL compatibility mode (`jdbc:h2:mem:...;MODE=PostgreSQL`) ensuring fast, zero-dependency CI runs when external database services are not present.
+
+---
+
+## 13. Phase 6: End-to-End System Validation & Hackathon Demonstration
+
+### 13.1 Ten Core Demonstration Capabilities
+
+Traceback 2.0 demonstrates all 10 core capabilities in an end-to-end integration scenario (`EndToEndInvestigationDemonstrationTest`):
+
+1. **Telemetry Ingestion**: Ingests realistic multiline log files and structured Java exception stack traces (`CannotAcquireLockException`, `ConnectionTimeoutException`).
+2. **Git Repository Analysis**: Leverages JGit to parse commit history, commit messages, authors, timestamps, modified file paths, line diffs, and configuration changes.
+3. **Stack Trace & Log Analysis**: Parses application exception chains down to the root cause frame and correlates log error bursts.
+4. **Deterministic Root-Cause Correlation**: Computes confidence scores using the transparent heuristic formula $S = T + O + A - C$ ($T \le 30, O \le 30, A \le 25, C \le 30$), correctly promoting root-cause commits (e.g. pool size shrinkage) and penalizing misleading commits.
+5. **Evidence Validation & Grounding**: Generates SHA-256 payload checksums for all evidence items and runs `DeterministicClaimValidator` to verify that every causal claim is backed by registered evidence.
+6. **Autonomous AI Investigation**: Leverages the Bifrost AI gateway client to generate structured executive summaries, verification steps, and honest uncertainty assessments.
+7. **External Technical Research**: Queries Tavily for technical documentation and library issue patterns (e.g., HikariCP connection pool starvation under load), isolating findings from internal evidence.
+8. **Strict Claim Grounding**: Enforces that AI-generated claims cite only verified evidence IDs, marking hallucinated claims as `UNSUPPORTED` and demoted claims as `CONTRADICTED`.
+9. **Interactive Frontend Reports**: Surfaces findings across 7 specialized dossier tabs connecting to backend REST endpoints.
+10. **Honest Insufficient-Evidence Decisions**: When available telemetry cannot substantiate a causal link, Traceback produces an `INSUFFICIENT_EVIDENCE` status, refusing to guess or assign false blame.

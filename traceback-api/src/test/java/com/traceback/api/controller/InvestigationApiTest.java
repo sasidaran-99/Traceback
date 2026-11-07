@@ -134,14 +134,15 @@ class InvestigationApiTest {
     }
 
     @Test
-    @DisplayName("POST /api/investigations should reject invalid non-existent path with 400 Bad Request")
-    void shouldRejectNonExistentPath() throws Exception {
+    @DisplayName("POST /api/investigations should reject invalid non-existent path within authorized boundary with 400 Bad Request")
+    void shouldRejectNonExistentPath(@TempDir Path tempDir) throws Exception {
+        String nonExistentPath = tempDir.resolve("non_existent_folder_xyz_123").toString().replace("\\", "\\\\");
         String payload = """
                 {
-                    "repositoryPath": "C:\\\\non_existent_folder_xyz_123",
+                    "repositoryPath": "%s",
                     "serviceName": "payment-service"
                 }
-                """;
+                """.formatted(nonExistentPath);
 
         mockMvc.perform(post("/api/investigations")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -152,9 +153,54 @@ class InvestigationApiTest {
     }
 
     @Test
+    @DisplayName("POST /api/investigations should reject unauthorized repository path with 403 Forbidden")
+    void shouldRejectUnauthorizedPath() throws Exception {
+        String payload = """
+                {
+                    "repositoryPath": "C:\\\\Windows\\\\System32\\\\unauthorized_repo",
+                    "serviceName": "payment-service"
+                }
+                """;
+
+        mockMvc.perform(post("/api/investigations")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.status").value(403))
+                .andExpect(jsonPath("$.message").value(containsString("Access denied")));
+    }
+
+    @Test
     @DisplayName("GET /api/investigations/{id} should return 404 for unknown ID")
     void shouldReturn404ForUnknownId() throws Exception {
         mockMvc.perform(get("/api/investigations/" + UUID.randomUUID()))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    @DisplayName("POST /api/investigations/analyze alias should also initiate deterministic investigation")
+    void shouldSupportAnalyzeAlias(@TempDir Path tempRepo) throws Exception {
+        try (Git git = Git.init().setDirectory(tempRepo.toFile()).call()) {
+            Path file = tempRepo.resolve("Test.java");
+            Files.writeString(file, "class Test {}");
+            git.add().addFilepattern("Test.java").call();
+            git.commit().setMessage("Initial commit").call();
+        }
+
+        String payload = """
+                {
+                    "repositoryPath": "%s",
+                    "serviceName": "order-service",
+                    "environment": "production",
+                    "stackTrace": "java.lang.NullPointerException\\n\\tat com.example.Test.run(Test.java:10)"
+                }
+                """.formatted(tempRepo.toString().replace("\\", "\\\\"));
+
+        mockMvc.perform(post("/api/investigations/analyze")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.investigationId").isNotEmpty())
+                .andExpect(jsonPath("$.serviceName").value("order-service"));
     }
 }

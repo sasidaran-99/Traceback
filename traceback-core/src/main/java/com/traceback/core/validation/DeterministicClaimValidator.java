@@ -63,7 +63,7 @@ public class DeterministicClaimValidator implements ClaimValidator {
             Object foreignInv = item.metadata().get("investigationId");
             if (foreignInv != null && activeInvestigationId != null) {
                 String foreignStr = foreignInv.toString();
-                if (!foreignStr.equalsIgnoreCase(activeInvestigationId.toString())) {
+                if (!foreignStr.equalsIgnoreCase(activeInvestigationId.toString()) && !"GLOBAL".equalsIgnoreCase(foreignStr)) {
                     return claim.withValidation(
                             ClaimValidationStatus.UNSUPPORTED,
                             "Validation failed: Evidence ID '" + evdId + "' belongs to a different investigation (" +

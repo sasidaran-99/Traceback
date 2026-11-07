@@ -79,6 +79,22 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(body);
     }
 
+    @ExceptionHandler(SecurityException.class)
+    public ResponseEntity<ApiErrorResponse> handleSecurityException(
+            SecurityException ex, HttpServletRequest request) {
+
+        log.warn("Security boundary violation on {}: {}", request.getRequestURI(), ex.getMessage());
+        ApiErrorResponse body = ApiErrorResponse.of(
+                HttpStatus.FORBIDDEN.value(),
+                "Forbidden",
+                ex.getMessage(),
+                request.getRequestURI(),
+                Collections.emptyList()
+        );
+
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(body);
+    }
+
     @ExceptionHandler(NoSuchElementException.class)
     public ResponseEntity<ApiErrorResponse> handleNotFound(
             NoSuchElementException ex, HttpServletRequest request) {

@@ -70,6 +70,13 @@ public class InvestigationAgent {
         List<AgentInvestigationStep> steps = new ArrayList<>();
         int stepNum = 1;
 
+        // Ensure all evidence items from deterministic result are available in the active registry
+        if (result.evidenceItems() != null) {
+            for (EvidenceItem item : result.evidenceItems()) {
+                evidenceRegistry.registerItem(item);
+            }
+        }
+
         // Step 1: Ingest deterministic results
         steps.add(AgentInvestigationStep.of(
                 stepNum++,

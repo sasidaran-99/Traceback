@@ -60,3 +60,5 @@ traceback:
     timeout-seconds: ${TAVILY_TIMEOUT_SECONDS:10}
   cors:
     allowed-origin-patterns: ${CORS_ALLOWED_ORIGIN_PATTERNS:http://localhost:[*],http://127.0.0.1:[*]}
+  security:
+    allowed-repo-roots: ${TRACEBACK_ALLOWED_REPO_ROOTS:}

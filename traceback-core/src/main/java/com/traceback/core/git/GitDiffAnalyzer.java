@@ -1,5 +1,7 @@
 package com.traceback.core.git;
 
+import org.springframework.stereotype.Component;
+
 import java.io.BufferedReader;
 import java.io.StringReader;
 import java.util.HashMap;
@@ -10,6 +12,7 @@ import java.util.regex.Pattern;
 /**
  * Parses unified diffs to compute line changes and extract configuration updates.
  */
+@Component
 public class GitDiffAnalyzer {
 
     private static final Pattern PROPERTIES_PATTERN = Pattern.compile("^([a-zA-Z0-9._-]+)\\s*[:=]\\s*(.*)$");
