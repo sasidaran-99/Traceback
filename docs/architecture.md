@@ -500,3 +500,72 @@ Statistical accuracy is measured empirically by the automated `EvaluationHarness
 - **Top-3 Accuracy ($\text{Acc@3}$)**: Percentage of causal scenarios where the true root cause is within the top 3 hypotheses.
 - **False-Positive Relationship Rate ($\text{FPRR}$)**: Proportion of reported edges linking innocent commits to errors.
 - **Correct Abstention Rate**: Percentage of insufficient-evidence or innocent-commit scenarios where the engine correctly abstains from false blame.
+
+---
+
+## 11. Autonomous AI Investigation Agent (Phase 4)
+
+Traceback 2.0 transforms from a purely deterministic investigation engine into an AI-assisted autonomous software failure investigation platform. The deterministic engine (Phases 1–3) remains the single source of truth for verified evidence, deterministic correlations, and confidence breakdown calculations ($S = T + O + A - C$).
+
+### 11.1 Agent Architecture & External Integrations
+
+```mermaid
+flowchart TD
+    subgraph Engine["Deterministic Engine (Phases 1-3)"]
+        DetResult[InvestigationResult]
+        Reg[EvidenceRegistry]
+        Validator[ClaimValidator]
+    end
+
+    subgraph ExternalServices["External Technical Gateways"]
+        Tavily[Tavily Search API<br/>Technical Documentation & Bug Patterns]
+        Bifrost[Bifrost AI Gateway<br/>Virtual Keys & Model Routing]
+    end
+
+    subgraph Agent["Autonomous Investigation Agent (Phase 4)"]
+        Orch[InvestigationAgent]
+        Findings[ExternalResearchFindings<br/>RES-TAVILY-...]
+        Reasoning[AI Synthesized Reasoning & Audit Trail]
+        GroundedClaims[Deterministic Validated Claims]
+    end
+
+    DetResult --> Orch
+    Orch -->|Exception Signature| Tavily
+    Tavily -->|Web Citations| Findings
+    Findings --> Orch
+    Orch -->|Grounded Prompt| Bifrost
+    Bifrost -->|LLM Reasoning| Reasoning
+    Orch -->|Claim Verification| Validator
+    Validator --> GroundedClaims
+    Reasoning --> Report[InvestigationAgentReport]
+    GroundedClaims --> Report
+```
+
+### 11.2 Core Integration Gateways
+
+1. **Bifrost AI Gateway**:
+   - Maxim AI's high-performance AI gateway (`http://localhost:8080/v1/chat/completions`).
+   - Virtual key routing (`sk-bf-...`), model abstraction (e.g., `gpt-4o`, `claude-3-5-sonnet`), timeout protection, and automated bounded retries for HTTP 429 / 5xx gateway faults.
+   - Credentials strictly driven by environment variables (`BIFROST_API_KEY`, `BIFROST_BASE_URL`, `BIFROST_MODEL`), with sensitive keys masked in all logs (`maskedApiKey()`).
+
+2. **Tavily Technical Research API**:
+   - Dedicated search API (`https://api.tavily.com/search`) for querying official library documentation, issue trackers, and error signatures.
+   - Enforces search budgets (`maxSearchesPerInvestigation`) and query caching to prevent duplicate API overhead.
+   - Produces structured `ExternalResearchFinding` objects with persistent citations.
+
+### 11.3 Epistemological Invariants & Grounding Guarantees
+
+1. **Evidence Grounding & Anti-Hallucination**:
+   - The AI agent is prohibited from manufacturing evidence identifiers or commit hashes.
+   - Every claim proposed or evaluated by the agent passes through `DeterministicClaimValidator`. Any assertion citing non-existent evidence IDs is rejected with `ClaimValidationStatus.UNSUPPORTED`.
+
+2. **Strict Separation of Evidence Types**:
+   - External findings from Tavily are tagged as `ExternalResearchFinding` (format: `RES-TAVILY-...`) and kept strictly separate from repository `EvidenceItem` records.
+   - External research documents general failure mechanics and best practices; it never substitutes for local repository proof.
+
+3. **Deterministic Score Integrity**:
+   - Confidence numbers are derived solely from the deterministic scoring formula ($S = T + O + A - C$). The AI agent does not fabricate numerical confidence scores; it assigns qualitative verdicts (`CONFIRMED`, `PROBABLE`, `INSUFFICIENT_EVIDENCE`) aligned with deterministic metrics.
+
+4. **Deterministic Fallback Resilience**:
+   - If Bifrost or Tavily are offline, rate-limited, or unconfigured, the agent automatically executes a deterministic-only fallback.
+   - Audit steps record all gateway decisions and errors, ensuring full observability across the triage workflow.

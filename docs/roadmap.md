@@ -100,26 +100,34 @@ flowchart LR
 
 ---
 
-### Phase 4: React + TypeScript Dashboard and Evidence Visualization
-- **Objective**: Deliver an interactive web dashboard for on-call software engineers to visualize incident timelines, navigate evidence graphs, and execute verification checklists.
+### Phase 4: Autonomous AI Investigation Agent (Completed)
+- **Objective**: Transform Traceback into an AI-assisted autonomous software investigation agent backed by Bifrost AI gateway and Tavily technical research, with 100% evidence grounding.
 - **Deliverables**:
-  - React 18 + TypeScript SPA created with Vite and styled with Tailwind CSS.
-  - Incident List View: Filterable overview of active and resolved incidents with severity badges.
-  - Chronological Timeline View: Interactive multi-track timeline displaying commits, CI runs, deployments, config updates, and error spikes.
-  - Evidence Graph Visualizer: Visual node-and-edge graph highlighting solid causal paths vs dotted temporal correlations.
-  - Side-by-Side Diff Inspector: Visual comparison of git diff chunks alongside the failing stack trace frame.
-  - Interactive Verification Checklist: Step-by-step checklist with clickable verification actions and status toggles.
-  - Vite dev proxy configuration routing to the Spring Boot backend.
+  - `BifrostClient` & `DefaultBifrostClient`: OpenAI-compatible AI gateway integration with virtual keys (`sk-bf-...`), model routing, timeouts, and bounded retries on 429/5xx errors.
+  - `TavilyResearchService` & `DefaultTavilyResearchService`: Technical search API integration for querying library documentation, issue trackers, and error signatures with query caching and budgeting.
+  - `InvestigationAgent`: Autonomous agent coordinating technical research, LLM reasoning, deterministic claim grounding via `ClaimValidator`, and transparent audit step logging.
+  - Anti-Hallucination & Evidence Isolation Invariants:
+    - AI-proposed claims citing unverified evidence IDs are rejected as `UNSUPPORTED`.
+    - External research findings (`RES-TAVILY-...`) remain isolated from internal git/log `EvidenceRegistry`.
+    - Confidence scores strictly follow deterministic $S = T + O + A - C$ without hallucinated numbers.
+  - Deterministic Fallback Mode: Cleanly executes automated reasoning when Bifrost or Tavily are unconfigured or offline.
+  - REST Endpoints:
+    - `POST /api/investigations/agent`
+    - `GET /api/investigations/{id}/agent-report`
+    - `GET /api/investigations/{id}/research`
+    - `GET /api/investigations/{id}/agent-steps`
+  - Automated test suite covering Bifrost, Tavily, agent grounding, fallback, and API endpoints (100% passing).
 - **Dependencies**: Phase 3.
-- **Acceptance Criteria**:
-  - UI loads and displays full investigation results for any scenario in under 2 seconds.
-  - Users can click on a hypothesis and immediately see the supporting evidence trail and git diff.
-  - Clean responsive design tested in modern Chromium and Firefox browsers.
-  - Frontend TypeScript code compiles with zero errors under strict mode (`tsc --noEmit`).
+- **Acceptance Criteria (Verified)**:
+  - All 63 Maven reactor tests pass with zero failures.
+  - All API keys strictly masked in logs and configuration.
+  - Hallucinated evidence IDs deterministically rejected.
+  - External research isolated from local evidence items.
+  - Full audit trail captured in `investigationSteps()`.
 
 ---
 
-### Phase 5: Kafka Reliability, Replay, Optional AI Explanations, Security and Evaluation
+### Phase 5: React + TypeScript Dashboard and Evidence Visualization (Next)
 - **Objective**: Production-grade scalability, event replay, optional grounded AI explanation summaries, API security, and empirical evaluation on an expanded benchmark suite.
 - **Deliverables**:
   - Apache Kafka integration:
@@ -146,8 +154,9 @@ flowchart LR
 | Phase | Core Objective | Primary Deliverables | Target Architecture | Status |
 | :--- | :--- | :--- | :--- | :--- |
 | **Phase 0** | Foundation & Design | Docs (`architecture`, `scenarios`, `eval`, `roadmap`), repo hygiene | Documentation & Design | **Complete** |
-| **Phase 1** | Backend & Ingestion | Spring Boot monolith skeleton, PostgreSQL Flyway, Ingest REST APIs | Modular Monolith | Next |
-| **Phase 2** | Integrations | GitHub webhook receiver, diff poller, Java stack trace parser | Modular Monolith | Pending |
-| **Phase 3** | Correlation Engine | Evidence graph, code/config matchers, hypothesis scoring, eval suite | Modular Monolith | Pending |
-| **Phase 4** | Web UI Dashboard | React + TypeScript + Vite, interactive timeline & evidence graph | Monolith + SPA | Pending |
-| **Phase 5** | Scale, AI & Eval | Kafka streaming, event replay, grounded AI summaries, 15+ eval report | Monolith + Kafka | Pending |
+| **Phase 1** | Backend & DB Foundation | Spring Boot monolith skeleton, PostgreSQL Flyway, Ingest REST APIs | Modular Monolith | **Complete** |
+| **Phase 2** | Deterministic Engine | Git history, Java stack trace parser, multiline log analyzer, correlation | Modular Monolith | **Complete** |
+| **Phase 3** | Evidence Validation & Eval | Deterministic claim validator, transparent confidence engine, benchmark harness | Modular Monolith | **Complete** |
+| **Phase 4** | Autonomous AI Agent | Bifrost gateway, Tavily research, evidence-grounded agent, audit steps | AI-Assisted Monolith | **Complete** |
+| **Phase 5** | Web UI Dashboard | React + TypeScript + Vite, interactive timeline & evidence graph | Monolith + SPA | Next |
+| **Phase 6** | Scale, Kafka & Replay | Kafka streaming, event replay, security, expanded 15+ eval report | Monolith + Kafka | Pending |

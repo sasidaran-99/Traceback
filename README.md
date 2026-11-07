@@ -88,4 +88,15 @@ TraceBack/
   - **Honest Abstention:** Explicit `INSUFFICIENT_EVIDENCE` generation and rejection when available telemetry cannot substantiate a causal link.
   - **Deterministic Evaluation Harness:** Empirical benchmark across 5 scenarios measuring Top-1 Accuracy (100%), Top-3 Accuracy (100%), False-Positive Relationship Rate (0.0%), Correct Abstention Rate (100%), and average latency (2.6 ms).
   - **New Claims REST API:** `GET /api/investigations/{id}/claims`.
-- **Next Phase:** **Phase 4 — Interactive Investigation UI (React + TypeScript)**.
+- **Phase 4 (Autonomous AI Investigation Agent & External Technical Research):** Complete.
+  - **Bifrost AI Gateway Integration:** OpenAI-compatible client supporting virtual keys (`sk-bf-...`), model routing, timeout control, and bounded retries for HTTP 429 and 5xx errors.
+  - **Tavily Technical Research API:** Automated research service querying library documentation and bug patterns with query caching and search budgeting.
+  - **Autonomous Investigation Agent (`InvestigationAgent`):** Orchestrates deterministic context ingestion, technical research, LLM reasoning, claim grounding, and step auditing.
+  - **Evidence Grounding Invariants:** AI-generated claims citing unverified evidence IDs are strictly rejected as `UNSUPPORTED` via `ClaimValidator`; external research findings are cleanly isolated from repository `EvidenceItem` records; confidence scores remain grounded in the deterministic formula.
+  - **Deterministic Fallback:** Robust fallback reasoning when external AI services are unconfigured or offline.
+  - **New Agent REST APIs:**
+    - `POST /api/investigations/agent`: Trigger end-to-end autonomous investigation.
+    - `GET /api/investigations/{id}/agent-report`: Retrieve structured AI agent investigation report.
+    - `GET /api/investigations/{id}/research`: Retrieve external technical research findings and citations.
+    - `GET /api/investigations/{id}/agent-steps`: Retrieve auditable sequential investigation trail.
+- **Next Phase:** **Phase 5 — Interactive Investigation UI (React + TypeScript)**.

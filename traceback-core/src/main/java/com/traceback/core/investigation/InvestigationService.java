@@ -217,4 +217,8 @@ public class InvestigationService {
     public List<com.traceback.core.validation.InvestigationClaim> getClaims(UUID id) {
         return getInvestigation(id).map(InvestigationResult::claims).orElse(Collections.emptyList());
     }
+
+    public EvidenceRegistry getEvidenceRegistry() {
+        return evidenceRegistry;
+    }
 }

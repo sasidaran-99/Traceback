@@ -44,3 +44,17 @@ logging:
   level:
     root: INFO
     com.traceback: DEBUG
+
+# AI Gateway and Technical Research configuration (Phase 4)
+traceback:
+  bifrost:
+    base-url: ${BIFROST_BASE_URL:http://localhost:8080/v1}
+    api-key: ${BIFROST_API_KEY:}
+    model: ${BIFROST_MODEL:gpt-4o}
+    timeout-seconds: ${BIFROST_TIMEOUT_SECONDS:15}
+    max-retries: ${BIFROST_MAX_RETRIES:2}
+  tavily:
+    base-url: ${TAVILY_BASE_URL:https://api.tavily.com}
+    api-key: ${TAVILY_API_KEY:}
+    max-searches: ${TAVILY_MAX_SEARCHES:3}
+    timeout-seconds: ${TAVILY_TIMEOUT_SECONDS:10}
