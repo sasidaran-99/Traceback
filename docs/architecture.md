@@ -639,3 +639,43 @@ flowchart TD
   7. *Agent Audit Trail*: Sequential execution audit log with timestamps and metadata tags.
 - **Investigation History (`/history`)**: Filterable, searchable table of all recorded investigations.
 - **System Settings (`/settings`)**: Live backend health poller, gateway configuration status, scoring policy reference, and security posture.
+
+### 12.4 API Reconciliation, Security Boundaries & Persistence Model
+
+#### 1. REST Endpoint Reconciliation
+The backend provides dual support for canonical RESTful collection paths and convenience action aliases:
+
+| Canonical Endpoint | Supported Aliases | Controller | Purpose |
+| :--- | :--- | :--- | :--- |
+| `POST /api/investigations` | `POST /api/investigations/analyze` | `InvestigationController` | Trigger deterministic investigation |
+| `GET /api/investigations` | — | `InvestigationController` | List all past investigations |
+| `GET /api/investigations/{id}` | — | `InvestigationController` | Fetch deterministic investigation detail |
+| `GET /api/investigations/{id}/timeline` | — | `InvestigationController` | Fetch reconstructed chronological timeline |
+| `GET /api/investigations/{id}/evidence` | — | `InvestigationController` | Fetch evidence items & SHA-256 hashes |
+| `GET /api/investigations/{id}/hypotheses` | — | `InvestigationController` | Fetch ranked candidate hypotheses |
+| `GET /api/investigations/{id}/claims` | — | `InvestigationController` | Fetch deterministic claim grounding results |
+| `POST /api/investigations/agent` | `POST /api/investigations/agent/run` | `AgentInvestigationController` | Trigger autonomous AI agent run |
+| `GET /api/investigations/agent` | — | `AgentInvestigationController` | List all past AI agent reports |
+| `GET /api/investigations/{id}/agent-report` | `GET /api/investigations/agent/{id}` | `AgentInvestigationController` | Fetch AI agent investigation report |
+| `GET /api/investigations/{id}/research` | `GET /api/investigations/agent/{id}/research` | `AgentInvestigationController` | Fetch external Tavily research findings |
+| `GET /api/investigations/{id}/agent-steps` | `GET /api/investigations/agent/{id}/audit`, `/steps` | `AgentInvestigationController` | Fetch sequential agent audit steps |
+| `GET /api/health` | — | `HealthController` | Engine health check & status |
+
+#### 2. Repository Path Security & Host Trust Boundary
+- **Canonicalization:** In `GitCollector.validateRepositoryPath()`, `Path.of(repositoryPath).toRealPath()` resolves all symlinks, relative segments (`..`), and aliases to a canonical path on the local filesystem.
+- **Git Metadata Verification:** The service strictly requires `Files.isDirectory(path)` and `Files.exists(path.resolve(".git"))`. Paths lacking a valid `.git` directory are rejected with `IllegalArgumentException` (HTTP 400 Bad Request).
+- **Host Trust Boundary:** The repository path is accessed by the Spring Boot server process on the host running the backend (or inside a container volume mount). It is not uploaded from the web browser. The frontend form explicitly documents this boundary.
+
+#### 3. Investigation Persistence & Session Cache
+- **In-Memory Store:** In Phase 5, active investigations (`InvestigationResult`) and agent reports (`InvestigationAgentReport`) are stored in thread-safe `ConcurrentHashMap` collections (`investigationStore` and `reportStore`) inside the Spring Boot application context.
+- **Persistence Boundary:** Ingested events, relationships, and incidents are persisted to PostgreSQL 16 via Spring Data JPA entities (`Event`, `Relationship`, `Incident`). However, investigation result graphs are currently session-scoped and do not survive application restarts. Full investigation persistence and event replay are scheduled for Phase 6 (Kafka event replay).
+- **Dashboard Honesty:** The dashboard reflects real backend state: when no investigations have run, history displays 0 records with an empty-state guidance panel rather than fabricated data.
+
+#### 4. CORS Security Configuration
+- [`CorsConfig.java`](file:///c:/Users/Sasidaran/Desktop/Sasidaran/Projects/TraceBack/traceback-api/src/main/java/com/traceback/api/config/CorsConfig.java) uses `@Value("${traceback.cors.allowed-origin-patterns:http://localhost:[*],http://127.0.0.1:[*]}")`.
+- Local development works out-of-the-box with Vite (`http://localhost:5173`).
+- In production, setting environment variable `CORS_ALLOWED_ORIGIN_PATTERNS` restricts browser origins to approved company domains, preventing unintentional permissive localhost access in production.
+
+#### 5. Database Test Setup vs. Production Environment
+- **Production:** Configured for PostgreSQL 16 via `docker-compose.yml` and `application.yml` (`jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:traceback_db}`) with HikariCP connection pooling and Flyway migrations (`V1__initial_schema.sql`).
+- **Automated Tests:** `FlywayMigrationTest` and `RepositoryIntegrationTest` execute against **in-memory H2 in PostgreSQL compatibility mode (`jdbc:h2:mem:...;MODE=PostgreSQL`)** to ensure fast, zero-dependency, hermetic builds without requiring a live external Docker daemon during test execution. Live PostgreSQL 16 container testing is verified via Docker Compose for production deployments.

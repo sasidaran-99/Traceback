@@ -37,8 +37,9 @@ public class AgentInvestigationController {
 
     /**
      * Triggers an autonomous AI agent investigation.
+     * Supports both POST /api/investigations/agent and POST /api/investigations/agent/run.
      */
-    @PostMapping("/agent")
+    @PostMapping({ "/agent", "/agent/run" })
     public ResponseEntity<InvestigationAgentReport> runAgentInvestigation(@Valid @RequestBody AgentInvestigationRequest request) {
         InvestigationAgentReport report;
 
@@ -71,8 +72,9 @@ public class AgentInvestigationController {
 
     /**
      * Retrieves the AI agent's structured report for an investigation.
+     * Supports both GET /api/investigations/{id}/agent-report and GET /api/investigations/agent/{id}.
      */
-    @GetMapping("/{id}/agent-report")
+    @GetMapping({ "/{id}/agent-report", "/agent/{id}" })
     public ResponseEntity<InvestigationAgentReport> getAgentReport(@PathVariable UUID id) {
         return investigationAgent.getReport(id)
                 .map(ResponseEntity::ok)
@@ -81,8 +83,9 @@ public class AgentInvestigationController {
 
     /**
      * Retrieves external technical research findings collected by Tavily for an investigation.
+     * Supports both GET /api/investigations/{id}/research and GET /api/investigations/agent/{id}/research.
      */
-    @GetMapping("/{id}/research")
+    @GetMapping({ "/{id}/research", "/agent/{id}/research" })
     public ResponseEntity<List<ExternalResearchFinding>> getResearchFindings(@PathVariable UUID id) {
         return investigationAgent.getReport(id)
                 .map(report -> ResponseEntity.ok(report.externalResearchFindings()))
@@ -91,8 +94,9 @@ public class AgentInvestigationController {
 
     /**
      * Retrieves the sequential audit log of actions taken by the agent during an investigation.
+     * Supports both GET /api/investigations/{id}/agent-steps and GET /api/investigations/agent/{id}/audit.
      */
-    @GetMapping("/{id}/agent-steps")
+    @GetMapping({ "/{id}/agent-steps", "/agent/{id}/audit", "/agent/{id}/steps" })
     public ResponseEntity<List<AgentInvestigationStep>> getAgentSteps(@PathVariable UUID id) {
         return investigationAgent.getReport(id)
                 .map(report -> ResponseEntity.ok(report.investigationSteps()))

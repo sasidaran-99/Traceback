@@ -214,7 +214,7 @@ export const NewInvestigationPage: React.FC = () => {
                   Local Repository Path <span className="text-rose-400">*</span>
                 </span>
                 <span className="text-[11px] text-dark-500 font-sans font-normal">
-                  Absolute path on the host system
+                  Filesystem path on machine running Spring Boot
                 </span>
               </label>
               <div className="relative">
@@ -228,6 +228,9 @@ export const NewInvestigationPage: React.FC = () => {
                 />
                 <FolderOpen className="w-4 h-4 text-dark-500 absolute left-3 top-3" />
               </div>
+              <p className="text-[11px] text-dark-500">
+                Must be an accessible directory containing a <code className="text-dark-400 font-mono">.git</code> folder on the Spring Boot server host (or container volume mount). Not a browser file upload.
+              </p>
             </div>
 
             {/* Service & Environment */}

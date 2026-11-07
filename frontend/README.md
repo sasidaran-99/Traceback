@@ -96,8 +96,10 @@ npm test
 
 ---
 
-## Security Model
+## Security Model & Host Boundaries
 
 1. **Zero Client Secret Leakage**: Neither Bifrost nor Tavily API keys are ever stored in or transmitted to the browser client. All external intelligence operations remain strictly behind Spring Boot backend controllers.
 2. **Cryptographic Integrity Verification**: All local evidence items feature SHA-256 payload checksums displayed directly in the Evidence Explorer.
 3. **Isolated Sandbox Research**: Web search results from Tavily provide external diagnostic context but are strictly quarantined from local evidence IDs and cannot artificially raise confidence scores.
+4. **Server-Side Repository Path Trust Boundary**: The local repository path input (`repositoryPath`) must point to a valid Git directory accessible on the host machine running Spring Boot (or container volume mount). It is not a browser-local file upload.
+5. **Session-Cached Investigation Store**: In Phase 5, investigation results and agent reports are held in thread-safe in-memory collections (`ConcurrentHashMap`) within the Spring Boot application context. Ingested events are persisted in PostgreSQL, while full investigation persistence across reboots is slated for Phase 6.

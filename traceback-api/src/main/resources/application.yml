@@ -58,3 +58,5 @@ traceback:
     api-key: ${TAVILY_API_KEY:}
     max-searches: ${TAVILY_MAX_SEARCHES:3}
     timeout-seconds: ${TAVILY_TIMEOUT_SECONDS:10}
+  cors:
+    allowed-origin-patterns: ${CORS_ALLOWED_ORIGIN_PATTERNS:http://localhost:[*],http://127.0.0.1:[*]}

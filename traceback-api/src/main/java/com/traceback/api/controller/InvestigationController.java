@@ -37,8 +37,9 @@ public class InvestigationController {
 
     /**
      * Initiates a deterministic investigation using repository and telemetry inputs.
+     * Supports both POST /api/investigations and POST /api/investigations/analyze.
      */
-    @PostMapping
+    @PostMapping({ "", "/analyze" })
     public ResponseEntity<InvestigationResponse> createInvestigation(@Valid @RequestBody InvestigationRequest request) {
         InvestigationResult result = investigationService.startInvestigation(
                 request.repositoryPath(),

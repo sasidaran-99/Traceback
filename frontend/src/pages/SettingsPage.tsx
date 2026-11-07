@@ -203,7 +203,7 @@ export const SettingsPage: React.FC = () => {
             <tbody className="divide-y divide-dark-800/60 text-dark-300">
               <tr>
                 <td className="py-2 px-3 text-emerald-400">POST</td>
-                <td className="py-2 px-3">/api/investigations/analyze</td>
+                <td className="py-2 px-3">/api/investigations <span className="text-dark-500 font-sans text-[11px]">(alias: /analyze)</span></td>
                 <td className="py-2 px-3 font-sans text-dark-400">Trigger deterministic investigation</td>
               </tr>
               <tr>
@@ -217,8 +217,23 @@ export const SettingsPage: React.FC = () => {
                 <td className="py-2 px-3 font-sans text-dark-400">Fetch investigation detail & hypotheses</td>
               </tr>
               <tr>
+                <td className="py-2 px-3 text-blue-400">GET</td>
+                <td className="py-2 px-3">/api/investigations/{'{id}'}/timeline</td>
+                <td className="py-2 px-3 font-sans text-dark-400">Chronological timeline of commits and errors</td>
+              </tr>
+              <tr>
+                <td className="py-2 px-3 text-blue-400">GET</td>
+                <td className="py-2 px-3">/api/investigations/{'{id}'}/evidence</td>
+                <td className="py-2 px-3 font-sans text-dark-400">Registered evidence items & SHA-256 hashes</td>
+              </tr>
+              <tr>
+                <td className="py-2 px-3 text-blue-400">GET</td>
+                <td className="py-2 px-3">/api/investigations/{'{id}'}/claims</td>
+                <td className="py-2 px-3 font-sans text-dark-400">Deterministic claim grounding results</td>
+              </tr>
+              <tr>
                 <td className="py-2 px-3 text-emerald-400">POST</td>
-                <td className="py-2 px-3">/api/investigations/agent/run</td>
+                <td className="py-2 px-3">/api/investigations/agent <span className="text-dark-500 font-sans text-[11px]">(alias: /agent/run)</span></td>
                 <td className="py-2 px-3 font-sans text-dark-400">Run autonomous AI investigation agent</td>
               </tr>
               <tr>
@@ -228,8 +243,18 @@ export const SettingsPage: React.FC = () => {
               </tr>
               <tr>
                 <td className="py-2 px-3 text-blue-400">GET</td>
-                <td className="py-2 px-3">/api/investigations/agent/{'{id}'}</td>
-                <td className="py-2 px-3 font-sans text-dark-400">Fetch agent report, claims, audit trail</td>
+                <td className="py-2 px-3">/api/investigations/{'{id}'}/agent-report <span className="text-dark-500 font-sans text-[11px]">(alias: /agent/{'{id}'})</span></td>
+                <td className="py-2 px-3 font-sans text-dark-400">Fetch AI agent report & reasoning</td>
+              </tr>
+              <tr>
+                <td className="py-2 px-3 text-blue-400">GET</td>
+                <td className="py-2 px-3">/api/investigations/{'{id}'}/research <span className="text-dark-500 font-sans text-[11px]">(alias: /agent/{'{id}'}/research)</span></td>
+                <td className="py-2 px-3 font-sans text-dark-400">External Tavily technical research findings</td>
+              </tr>
+              <tr>
+                <td className="py-2 px-3 text-blue-400">GET</td>
+                <td className="py-2 px-3">/api/investigations/{'{id}'}/agent-steps <span className="text-dark-500 font-sans text-[11px]">(alias: /agent/{'{id}'}/audit)</span></td>
+                <td className="py-2 px-3 font-sans text-dark-400">Sequential autonomous agent audit trail</td>
               </tr>
               <tr>
                 <td className="py-2 px-3 text-blue-400">GET</td>
