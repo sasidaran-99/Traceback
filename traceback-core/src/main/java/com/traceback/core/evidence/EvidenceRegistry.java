@@ -7,47 +7,44 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Registry contract for registering, querying, and auditing evidence claims across the system.
+ * Registry contract for registering, querying, and auditing evidence items and claims across Traceback.
  */
 public interface EvidenceRegistry {
 
     /**
-     * Registers an evidence claim after validation.
-     *
-     * @param claim the claim to register
-     * @return the registered claim
+     * Registers a collected evidence item with a unique evidence ID.
      */
+    EvidenceItem registerItem(EvidenceItem item);
+
+    /**
+     * Finds an evidence item by its unique evidence ID.
+     */
+    Optional<EvidenceItem> findItemById(String evidenceId);
+
+    /**
+     * Retrieves all registered evidence items.
+     */
+    List<EvidenceItem> findAllItems();
+
+    /**
+     * Retrieves all evidence items of a specific functional type.
+     */
+    List<EvidenceItem> findItemsByType(EvidenceType type);
+
+    /**
+     * Retrieves all evidence items from a specific source (e.g. GIT, LOG, STACK_TRACE).
+     */
+    List<EvidenceItem> findItemsBySource(String source);
+
+    /**
+     * Clears all registered items and claims (useful for per-investigation isolation).
+     */
+    void clear();
+
+    // Claim operations
     EvidenceClaim registerClaim(EvidenceClaim claim);
-
-    /**
-     * Finds a claim by its unique identifier.
-     *
-     * @param claimId unique identifier
-     * @return optional claim
-     */
     Optional<EvidenceClaim> findById(UUID claimId);
-
-    /**
-     * Retrieves all claims where the specified event is the source.
-     *
-     * @param sourceEventId event ID
-     * @return list of matching claims
-     */
     List<EvidenceClaim> findBySourceEvent(UUID sourceEventId);
-
-    /**
-     * Retrieves all claims where the specified event is the target.
-     *
-     * @param targetEventId event ID
-     * @return list of matching claims
-     */
     List<EvidenceClaim> findByTargetEvent(UUID targetEventId);
-
-    /**
-     * Retrieves all claims of a specific epistemological category.
-     *
-     * @param category EXPLICIT, INFERRED, or TEMPORAL
-     * @return list of matching claims
-     */
     List<EvidenceClaim> findByCategory(RelationshipCategory category);
 }

@@ -52,9 +52,9 @@ TraceBack/
 │   ├── incident-scenarios.md    # Reproducible scenarios (A: Code, B: Config, C: Misleading commit)
 │   ├── evaluation-plan.md       # Baseline comparison, measurable metrics, evaluation harness
 │   └── roadmap.md               # Phased delivery plan from Phase 0 to Phase 5
-├── traceback-core/              # Domain models (Event, Relationship, Incident, Hypothesis), Enums, Repositories
+├── traceback-core/              # Domain models, repositories, Git collector, Log analyzer, Stack trace parser, Evidence registry, Correlation engine
 ├── traceback-ingestion/         # Event ingestion DTOs, validation, service, and POST /api/events endpoint
-├── traceback-api/               # Spring Boot entry point, health endpoint, exception handler, Flyway migrations
+├── traceback-api/               # Spring Boot application, investigation controller, REST APIs, Flyway migrations
 ├── docker-compose.yml           # PostgreSQL 16 container definition with healthchecks
 ├── pom.xml                      # Maven multi-module root POM
 ├── .env.example                 # Local environment template with placeholders
@@ -75,4 +75,12 @@ TraceBack/
 
 - **Phase 0 (Project Foundation and Investigation Design):** Complete.
 - **Phase 1 (Spring Boot Backend, PostgreSQL and Event Ingestion APIs):** Complete.
-- **Next Phase:** **Phase 2 — GitHub Integration and Application Error Ingestion**.
+- **Phase 2 (Deterministic Investigation Engine, Git/Log Analysis & Correlation):** Complete.
+  - Local repository Git inspection and line-level diff analyzer via JGit.
+  - Robust multiline Java and Spring Boot stack trace parser with nested cause resolution.
+  - Multi-format log analyzer supporting Spring multiline logs and JSON structured logs.
+  - Unified chronological timeline builder.
+  - 100% deterministic correlation engine implementing Rules A–E (temporal proximity, stack trace overlap, configuration overlap, error signature matching, and contradiction demotion) without any LLM dependencies.
+  - SHA-256 hashed evidence registry ensuring verifiable auditability.
+  - Investigation REST APIs (`/api/investigations`, `/api/investigations/{id}`, `/api/investigations/{id}/timeline`, `/api/investigations/{id}/evidence`, `/api/investigations/{id}/hypotheses`).
+- **Next Phase:** **Phase 3 — Interactive Investigation UI (React + TypeScript)**.

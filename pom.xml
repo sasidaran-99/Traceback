@@ -31,10 +31,17 @@
         <postgresql.version>42.7.4</postgresql.version>
         <flyway.version>10.10.0</flyway.version>
         <testcontainers.version>1.19.8</testcontainers.version>
+        <jgit.version>6.9.0.202403050737-r</jgit.version>
     </properties>
 
     <dependencyManagement>
         <dependencies>
+            <!-- JGit for Local Git Inspection -->
+            <dependency>
+                <groupId>org.eclipse.jgit</groupId>
+                <artifactId>org.eclipse.jgit</artifactId>
+                <version>${jgit.version}</version>
+            </dependency>
             <!-- Spring Boot Dependencies BOM -->
             <dependency>
                 <groupId>org.springframework.boot</groupId>
