@@ -40,7 +40,12 @@ public class LogAnalyzer {
     // Matches standard Spring Boot Logback: 2026-10-10 14:16:30.123 ERROR 12345 --- [thread] logger : message
     // Also matches ISO timestamps: 2026-10-10T14:16:30.123Z or 2026-10-10T14:16:30.123+00:00
     private static final Pattern SPRING_LOG_PATTERN = Pattern.compile(
-            "^(\\d{4}-\\d{2}-\\d{2}[T ]\\d{2}:\\d{2}:\\d{2}(?:[.,]\\d{3,6})?(?:Z|[+-]\\d{2}:?\\d{2})?)\\s+([A-Z]+)\\s+(?:\\d+\\s+---\\s+)?(?:\\[([^\\]]+)\\]\\s+)?([\\w$.]+)\\s*:\\s*(.*)$"
+            "^(\\d{4}-\\d{2}-\\d{2}[T ]\\d{2}:\\d{2}:\\d{2}(?:[.,]\\d{3,6})?(?:Z|[+-]\\d{2}:?\\d{2})?)\\s+([A-Z]+)\\s+(?:\\d+\\s+---\\s+)?(?:\\[([^\\]]+)\\]\\s+)?([\\w$.]+)\\s*[-:]\\s*(.*)$"
+    );
+
+    // Matches Log4j / Logback thread-first format: 2026-11-07 14:15:00.120 [http-nio-8080-exec-1] WARN com.zaxxer... - message
+    private static final Pattern THREAD_FIRST_LOG_PATTERN = Pattern.compile(
+            "^(\\d{4}-\\d{2}-\\d{2}[T ]\\d{2}:\\d{2}:\\d{2}(?:[.,]\\d{3,6})?(?:Z|[+-]\\d{2}:?\\d{2})?)\\s+\\[([^\\]]+)\\]\\s+([A-Z]+)\\s+([\\w$.]+)\\s*[-:]\\s*(.*)$"
     );
 
     private static final DateTimeFormatter ISO_FORMATTER = DateTimeFormatter.ISO_DATE_TIME;
@@ -158,8 +163,10 @@ public class LogAnalyzer {
                     continue;
                 }
 
-                // Check if line matches a new log entry header
+                // Check if line matches a new log entry header (Spring Boot standard or Log4j thread-first)
                 Matcher matcher = SPRING_LOG_PATTERN.matcher(trimmed);
+                Matcher tfMatcher = THREAD_FIRST_LOG_PATTERN.matcher(trimmed);
+
                 if (matcher.find()) {
                     if (current != null) {
                         entries.add(current.build(stackTraceParser));
@@ -170,6 +177,18 @@ public class LogAnalyzer {
                     String thread = matcher.group(3) != null ? matcher.group(3) : "main";
                     String logger = matcher.group(4);
                     String message = matcher.group(5);
+
+                    current = new RawLogBuilder(timestamp, level, thread, logger, message, lineNumber);
+                } else if (tfMatcher.find()) {
+                    if (current != null) {
+                        entries.add(current.build(stackTraceParser));
+                    }
+
+                    Instant timestamp = parseTimestamp(tfMatcher.group(1));
+                    String thread = tfMatcher.group(2) != null ? tfMatcher.group(2) : "main";
+                    String level = tfMatcher.group(3);
+                    String logger = tfMatcher.group(4);
+                    String message = tfMatcher.group(5);
 
                     current = new RawLogBuilder(timestamp, level, thread, logger, message, lineNumber);
                 } else {

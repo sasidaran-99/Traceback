@@ -166,6 +166,30 @@ public class Hypothesis {
         this.candidateRootCause = candidateRootCause;
     }
 
+    /**
+     * Resolves the candidate commit SHA associated with this hypothesis,
+     * checking candidateRootCause, supportingEvidenceIds, and summary fallback.
+     */
+    public String getCandidateCommitSha() {
+        if (candidateRootCause != null && candidateRootCause.getEntityId() != null) {
+            return candidateRootCause.getEntityId();
+        }
+        if (supportingEvidenceIds != null) {
+            for (String evdId : supportingEvidenceIds) {
+                if (evdId.startsWith("EVD-GIT-")) {
+                    return evdId.substring("EVD-GIT-".length());
+                }
+            }
+        }
+        if (summary != null) {
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("\\b([0-9a-f]{7,40})\\b").matcher(summary);
+            if (m.find()) {
+                return m.group(1);
+            }
+        }
+        return null;
+    }
+
     public int getRank() {
         return rank;
     }

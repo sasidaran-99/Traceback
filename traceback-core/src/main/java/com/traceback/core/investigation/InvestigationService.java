@@ -9,6 +9,9 @@ import com.traceback.core.evidence.EvidenceRegistry;
 import com.traceback.core.evidence.EvidenceType;
 import com.traceback.core.git.CommitEvidence;
 import com.traceback.core.git.GitCollector;
+import com.traceback.core.git.workingtree.GitWorkingTreeCollector;
+import com.traceback.core.git.workingtree.WorkingTreeEvidence;
+import com.traceback.core.git.workingtree.WorkingTreeSnapshot;
 import com.traceback.core.log.LogAnalyzer;
 import com.traceback.core.log.LogEvidence;
 import com.traceback.core.stacktrace.ParsedException;
@@ -17,6 +20,7 @@ import com.traceback.core.timeline.TimelineBuilder;
 import com.traceback.core.timeline.TimelineEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -39,6 +43,7 @@ public class InvestigationService {
     private static final Logger log = LoggerFactory.getLogger(InvestigationService.class);
 
     private final GitCollector gitCollector;
+    private final GitWorkingTreeCollector workingTreeCollector;
     private final StackTraceParser stackTraceParser;
     private final LogAnalyzer logAnalyzer;
     private final TimelineBuilder timelineBuilder;
@@ -47,18 +52,31 @@ public class InvestigationService {
 
     private final Map<UUID, InvestigationResult> investigationStore = new ConcurrentHashMap<>();
 
+    @Autowired
     public InvestigationService(GitCollector gitCollector,
+                                GitWorkingTreeCollector workingTreeCollector,
                                 StackTraceParser stackTraceParser,
                                 LogAnalyzer logAnalyzer,
                                 TimelineBuilder timelineBuilder,
                                 CorrelationEngine correlationEngine,
                                 EvidenceRegistry evidenceRegistry) {
         this.gitCollector = gitCollector;
+        this.workingTreeCollector = workingTreeCollector != null ? workingTreeCollector : new GitWorkingTreeCollector(gitCollector, (List<String>) null);
         this.stackTraceParser = stackTraceParser;
         this.logAnalyzer = logAnalyzer;
         this.timelineBuilder = timelineBuilder;
         this.correlationEngine = correlationEngine;
         this.evidenceRegistry = evidenceRegistry;
+    }
+
+    public InvestigationService(GitCollector gitCollector,
+                                StackTraceParser stackTraceParser,
+                                LogAnalyzer logAnalyzer,
+                                TimelineBuilder timelineBuilder,
+                                CorrelationEngine correlationEngine,
+                                EvidenceRegistry evidenceRegistry) {
+        this(gitCollector, new GitWorkingTreeCollector(gitCollector, (List<String>) null),
+                stackTraceParser, logAnalyzer, timelineBuilder, correlationEngine, evidenceRegistry);
     }
 
     public InvestigationService() {
@@ -90,6 +108,19 @@ public class InvestigationService {
 
         // 1. Collect Git commits
         List<CommitEvidence> commits = gitCollector.collectCommits(repositoryPath, max);
+
+        // 1b. Collect uncommitted working tree state and discrepancies
+        WorkingTreeSnapshot workingTreeSnapshot = null;
+        try {
+            workingTreeSnapshot = workingTreeCollector.collectWorkingTree(repositoryPath);
+            if (workingTreeSnapshot != null && workingTreeSnapshot.hasChanges()) {
+                for (WorkingTreeEvidence wte : workingTreeSnapshot.changes()) {
+                    evidenceRegistry.registerItem(wte.toEvidenceItem(investigationId));
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Working tree inspection skipped or failed for {}: {}", repositoryPath, e.getMessage());
+        }
 
         // 2. Parse Stack Trace if provided
         ParsedException parsedStack = null;
@@ -139,7 +170,7 @@ public class InvestigationService {
 
         // 4. Build Timeline
         Instant failureOnset = logEvidence != null ? logEvidence.firstObservedFailure() : null;
-        List<TimelineEvent> timeline = timelineBuilder.buildTimeline(commits, logEvidence, parsedStack, failureOnset);
+        List<TimelineEvent> timeline = timelineBuilder.buildTimeline(commits, logEvidence, parsedStack, failureOnset, workingTreeSnapshot);
 
         // 5. Correlate and Score Hypotheses
         Incident simulatedIncident = new Incident(
@@ -161,6 +192,7 @@ public class InvestigationService {
                 commits,
                 logEvidence,
                 parsedStack,
+                workingTreeSnapshot,
                 evidenceRegistry,
                 window
         );
@@ -168,7 +200,8 @@ public class InvestigationService {
         // 6. Assemble Result
         List<EvidenceItem> allEvidence = evidenceRegistry.findAllItems();
         ParsedException primaryException = parsedStack != null ? parsedStack : (logEvidence != null ? logEvidence.primaryException() : null);
-        int totalErrors = logEvidence != null ? logEvidence.totalErrors() : (parsedStack != null ? 1 : 0);
+        int logErrors = logEvidence != null ? logEvidence.totalErrors() : 0;
+        int totalErrors = logErrors > 0 ? logErrors : (parsedStack != null ? 1 : 0);
 
         InvestigationResult result = new InvestigationResult(
                 investigationId,
@@ -224,5 +257,9 @@ public class InvestigationService {
 
     public EvidenceRegistry getEvidenceRegistry() {
         return evidenceRegistry;
+    }
+
+    public GitWorkingTreeCollector getWorkingTreeCollector() {
+        return workingTreeCollector;
     }
 }

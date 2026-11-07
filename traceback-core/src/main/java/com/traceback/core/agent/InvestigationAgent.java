@@ -121,18 +121,21 @@ public class InvestigationAgent {
                 .distinct()
                 .toList();
 
-        // Step 3: AI Reasoning via Bifrost Gateway
-        String summary;
-        String primaryRootCause;
-        String aiReasoning;
-        List<String> verificationSteps = new ArrayList<>();
-        List<String> uncertainties = new ArrayList<>();
-
         Hypothesis topHypothesis = result.hypotheses().isEmpty() ? null : result.hypotheses().getFirst();
         String topCommitSha = getCommitSha(topHypothesis);
         ConfidenceBreakdown topBreakdown = topCommitSha != null
                 ? result.confidenceBreakdownsByCommitSha().get(topCommitSha)
                 : null;
+
+        // Authoritative Final Verdict Determination (deterministic foundation)
+        AgentInvestigationStatus finalStatus = determineFinalStatus(result, topHypothesis, topBreakdown);
+
+        // Step 3: AI Reasoning via Bifrost Gateway (or Deterministic Fallback)
+        String summary;
+        String primaryRootCause;
+        String aiReasoning;
+        List<String> verificationSteps = new ArrayList<>();
+        List<String> uncertainties = new ArrayList<>();
 
         if (bifrostClient.isAvailable()) {
             try {
@@ -142,13 +145,29 @@ public class InvestigationAgent {
 
                 aiReasoning = completionText;
                 summary = extractSection(completionText, "SUMMARY",
-                        formatDefaultSummary(result, topHypothesis));
-                primaryRootCause = extractSection(completionText, "ROOT CAUSE",
-                        topHypothesis != null ? "Commit " + topCommitSha + ": " + topHypothesis.getSummary() : "Unknown");
+                        formatDefaultSummary(result, topHypothesis, finalStatus));
+
+                // Guard against AI hallucinated verdict overrides:
+                if (isWorkingTreeAnomaly(topHypothesis)) {
+                    summary = topHypothesis.getSummary();
+                    primaryRootCause = "Working tree filesystem anomaly: Tracked files are missing from disk without any committed deletion in Git history. The process responsible for their disappearance is not established.";
+                } else if (finalStatus == AgentInvestigationStatus.INSUFFICIENT_EVIDENCE) {
+                    summary = formatDefaultSummary(result, topHypothesis, finalStatus);
+                    primaryRootCause = "None: Available telemetry is insufficient to establish a primary cause.";
+                } else if (finalStatus == AgentInvestigationStatus.PROBABLE) {
+                    if (summary.toLowerCase().contains("confirmed") || summary.toLowerCase().contains("directly triggered")) {
+                        summary = formatDefaultSummary(result, topHypothesis, finalStatus);
+                    }
+                    primaryRootCause = topHypothesis != null ? topHypothesis.getSummary() : "Inconclusive root cause";
+                } else {
+                    primaryRootCause = extractSection(completionText, "ROOT CAUSE",
+                            topHypothesis != null ? topHypothesis.getSummary() : "Unknown");
+                }
+
                 verificationSteps = extractList(completionText, "VERIFICATION STEPS",
                         generateDefaultVerificationSteps(result, topHypothesis));
                 uncertainties = extractList(completionText, "UNCERTAINTIES",
-                        generateDefaultUncertainties(result, topBreakdown));
+                        generateDefaultUncertainties(result, topBreakdown, finalStatus));
 
                 steps.add(AgentInvestigationStep.of(
                         stepNum++,
@@ -167,13 +186,13 @@ public class InvestigationAgent {
                         "Bifrost gateway error: " + e.getMessage() + ". Executed deterministic fallback.",
                         Map.of("error", e.getMessage())
                 ));
-                summary = formatDefaultSummary(result, topHypothesis);
-                primaryRootCause = topHypothesis != null
-                        ? "Commit " + topCommitSha + " (" + topHypothesis.getSummary() + ")"
-                        : "Inconclusive root cause";
-                aiReasoning = formatFallbackReasoning(result, topHypothesis, topBreakdown);
+                summary = formatDefaultSummary(result, topHypothesis, finalStatus);
+                primaryRootCause = isWorkingTreeAnomaly(topHypothesis)
+                        ? "Working tree filesystem anomaly: Tracked files are missing from disk without any committed deletion in Git history. The process responsible for their disappearance is not established."
+                        : (topHypothesis != null ? topHypothesis.getSummary() : "None: Telemetry is insufficient to establish a primary cause.");
+                aiReasoning = formatFallbackReasoning(result, topHypothesis, topBreakdown, finalStatus);
                 verificationSteps = generateDefaultVerificationSteps(result, topHypothesis);
-                uncertainties = generateDefaultUncertainties(result, topBreakdown);
+                uncertainties = generateDefaultUncertainties(result, topBreakdown, finalStatus);
             }
         } else {
             steps.add(AgentInvestigationStep.of(
@@ -182,26 +201,39 @@ public class InvestigationAgent {
                     "Bifrost client not configured (API key missing). Deterministic fallback reasoning generated.",
                     Collections.emptyMap()
             ));
-            summary = formatDefaultSummary(result, topHypothesis);
-            primaryRootCause = topHypothesis != null
-                    ? "Commit " + topCommitSha + " (" + topHypothesis.getSummary() + ")"
-                    : "Inconclusive root cause";
-            aiReasoning = formatFallbackReasoning(result, topHypothesis, topBreakdown);
+            summary = formatDefaultSummary(result, topHypothesis, finalStatus);
+            primaryRootCause = isWorkingTreeAnomaly(topHypothesis)
+                    ? "Working tree filesystem anomaly: Tracked files are missing from disk without any committed deletion in Git history. The process responsible for their disappearance is not established."
+                    : (topHypothesis != null ? topHypothesis.getSummary() : "None: Telemetry is insufficient to establish a primary cause.");
+            aiReasoning = formatFallbackReasoning(result, topHypothesis, topBreakdown, finalStatus);
             verificationSteps = generateDefaultVerificationSteps(result, topHypothesis);
-            uncertainties = generateDefaultUncertainties(result, topBreakdown);
+            uncertainties = generateDefaultUncertainties(result, topBreakdown, finalStatus);
         }
 
         // Step 4: Claim Validation & Grounding against EvidenceRegistry
         List<InvestigationClaim> allClaims = new ArrayList<>(result.claims());
-        if (topHypothesis != null && topCommitSha != null) {
-            List<String> supIds = result.evidenceByCommitSha().getOrDefault(topCommitSha, Collections.emptyList());
-            String counter = result.counterEvidenceByCommitSha().get(topCommitSha);
-            List<String> contraIds = counter != null ? List.of(counter) : Collections.emptyList();
+        if (topHypothesis != null && (topCommitSha != null || isWorkingTreeAnomaly(topHypothesis))) {
+            List<String> supIds = isWorkingTreeAnomaly(topHypothesis)
+                    ? topHypothesis.getSupportingEvidenceIds()
+                    : result.evidenceByCommitSha().getOrDefault(topCommitSha, Collections.emptyList());
+            String counter = topCommitSha != null ? result.counterEvidenceByCommitSha().get(topCommitSha) : null;
+            List<String> contraIds = counter != null ? List.of(counter) : (isWorkingTreeAnomaly(topHypothesis) ? topHypothesis.getContradictingEvidenceIds() : Collections.emptyList());
+
+            String claimStatement;
+            if (isWorkingTreeAnomaly(topHypothesis)) {
+                claimStatement = topHypothesis.getSummary();
+            } else if (finalStatus == AgentInvestigationStatus.CONFIRMED) {
+                claimStatement = "Commit " + topCommitSha + " is the confirmed root cause of failure.";
+            } else if (finalStatus == AgentInvestigationStatus.PROBABLE) {
+                claimStatement = "Commit " + topCommitSha + " is a probable contributing change for " + result.serviceName() + " failure.";
+            } else {
+                claimStatement = "Commit " + topCommitSha + " shows insufficient evidence to confirm root cause.";
+            }
 
             InvestigationClaim topClaim = InvestigationClaim.create(
                     "CLAIM-AGENT-PRIMARY-" + invId.toString().substring(0, 8),
                     invId,
-                    "Commit " + topCommitSha + " is the primary suspected root cause of failure.",
+                    claimStatement,
                     supIds,
                     contraIds
             );
@@ -223,9 +255,7 @@ public class InvestigationAgent {
                 Map.of("totalClaims", validatedClaims.size(), "supported", validCount, "unsupportedOrContradicted", unsuppCount)
         ));
 
-        // Step 5: Final Verdict Determination
-        AgentInvestigationStatus finalStatus = determineFinalStatus(result, topHypothesis, topBreakdown);
-
+        // Step 5: Record Final Authoritative Verdict in Audit Trail
         steps.add(AgentInvestigationStep.of(
                 stepNum,
                 "Final Verdict",
@@ -287,10 +317,27 @@ public class InvestigationAgent {
     }
 
     private String getCommitSha(Hypothesis hypothesis) {
-        if (hypothesis == null || hypothesis.getCandidateRootCause() == null) {
+        if (hypothesis == null) {
             return null;
         }
-        return hypothesis.getCandidateRootCause().getEntityId();
+        if (hypothesis.getCandidateCommitSha() != null) {
+            return hypothesis.getCandidateCommitSha();
+        }
+        if (hypothesis.getCandidateRootCause() != null && hypothesis.getCandidateRootCause().getEntityId() != null) {
+            return hypothesis.getCandidateRootCause().getEntityId();
+        }
+        if (hypothesis.getSupportingEvidenceIds() != null) {
+            for (String evdId : hypothesis.getSupportingEvidenceIds()) {
+                if (evdId.startsWith("EVD-GIT-")) {
+                    return evdId.substring("EVD-GIT-".length());
+                }
+            }
+        }
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("\\b([0-9a-f]{7,40})\\b").matcher(hypothesis.getSummary());
+        if (m.find()) {
+            return m.group(1);
+        }
+        return null;
     }
 
     private List<ExternalResearchFinding> conductResearch(InvestigationResult result) {
@@ -395,6 +442,14 @@ public class InvestigationAgent {
         return BifrostRequest.of(bifrostClient.getConfig().model(), messages);
     }
 
+    private boolean isWorkingTreeAnomaly(Hypothesis hypothesis) {
+        if (hypothesis == null) return false;
+        if (hypothesis.getMatchedRules() != null && hypothesis.getMatchedRules().contains("RULE_WT_MISSING_TRACKED_FILES")) {
+            return true;
+        }
+        return hypothesis.getSummary() != null && hypothesis.getSummary().contains("Working tree anomaly");
+    }
+
     private AgentInvestigationStatus determineFinalStatus(InvestigationResult result,
                                                           Hypothesis topHypothesis,
                                                           ConfidenceBreakdown topBreakdown) {
@@ -402,73 +457,173 @@ public class InvestigationAgent {
             return AgentInvestigationStatus.INSUFFICIENT_EVIDENCE;
         }
 
+        if (isWorkingTreeAnomaly(topHypothesis)) {
+            return AgentInvestigationStatus.CONFIRMED;
+        }
+
         double conf = topHypothesis.getConfidenceScore();
         boolean hasPenalty = topBreakdown != null && topBreakdown.contradictionPenalty() > 0;
 
-        if (conf >= 0.70 && !hasPenalty) {
-            return AgentInvestigationStatus.CONFIRMED;
-        } else if (conf >= 0.40) {
-            return AgentInvestigationStatus.PROBABLE;
-        } else {
+        if (conf < 0.40 || hasPenalty) {
             return AgentInvestigationStatus.INSUFFICIENT_EVIDENCE;
         }
-    }
 
-    private String formatDefaultSummary(InvestigationResult result, Hypothesis topHypothesis) {
-        String exc = result.primaryException() != null ? result.primaryException().exceptionType() : "Unknown error";
-        String sha = getCommitSha(topHypothesis);
-        if (topHypothesis != null && sha != null) {
-            return String.format("Investigation identified commit %s as the most probable cause of %s in %s service (confidence: %.2f).",
-                    sha, exc, result.serviceName(), topHypothesis.getConfidenceScore());
+        // A confirmed verdict requires explicit evidence satisfying grounding and validation rules.
+        // A high heuristic score alone must NOT establish confirmation.
+        // A configuration change alone without independent deployment verification or corroborating repeated failure logs is PROBABLE.
+        boolean isExplicitlyConfirmed = topHypothesis.getStatus() == com.traceback.core.domain.HypothesisStatus.CONFIRMED;
+        boolean hasDeploymentProof = hasDeploymentEvidence(result, topHypothesis);
+        boolean hasCorroboratingLogBurst = topBreakdown != null && topBreakdown.agreementPoints() >= 15.0 && result.errorsDetected() > 1;
+        boolean hasDirectExecutionOverlap = hasDirectCrashFrameMatch(topHypothesis);
+
+        if (conf >= 0.75 && (isExplicitlyConfirmed || hasDeploymentProof || hasDirectExecutionOverlap || hasCorroboratingLogBurst)) {
+            return AgentInvestigationStatus.CONFIRMED;
+        } else {
+            return AgentInvestigationStatus.PROBABLE;
         }
-        return String.format("Investigation into %s in %s service is inconclusive due to insufficient evidence.",
-                exc, result.serviceName());
     }
 
-    private String formatFallbackReasoning(InvestigationResult result, Hypothesis topHypothesis, ConfidenceBreakdown topBreakdown) {
+    private boolean hasDeploymentEvidence(InvestigationResult result, Hypothesis topHypothesis) {
+        if (result.timeline() != null) {
+            boolean hasDeployEvent = result.timeline().stream()
+                    .anyMatch(e -> "DEPLOYMENT".equalsIgnoreCase(e.eventType()) || "DEPLOYMENT".equalsIgnoreCase(e.source()));
+            if (hasDeployEvent) return true;
+        }
+        if (result.evidenceItems() != null) {
+            return result.evidenceItems().stream()
+                    .anyMatch(item -> item.summary() != null && item.summary().toLowerCase().contains("deploy"));
+        }
+        return false;
+    }
+
+    private boolean hasDirectCrashFrameMatch(Hypothesis topHypothesis) {
+        if (topHypothesis == null || topHypothesis.getMatchedRules() == null) {
+            return false;
+        }
+        return topHypothesis.getMatchedRules().contains("RULE_B_STACK_TRACE_OVERLAP");
+    }
+
+    private String formatDefaultSummary(InvestigationResult result, Hypothesis topHypothesis, AgentInvestigationStatus verdict) {
+        if (isWorkingTreeAnomaly(topHypothesis)) {
+            return topHypothesis.getSummary();
+        }
+
+        String excDisplay = result.primaryException() != null ? result.primaryException().formatTypeChain() : "Unknown error";
+        String sha = getCommitSha(topHypothesis);
+
+        if (verdict == AgentInvestigationStatus.INSUFFICIENT_EVIDENCE || topHypothesis == null || sha == null) {
+            return String.format("Investigation into %s in %s service is inconclusive due to insufficient evidence. Available telemetry is inadequate to establish a verified causal link.",
+                    excDisplay, result.serviceName());
+        }
+
+        if (verdict == AgentInvestigationStatus.CONFIRMED) {
+            return String.format("Investigation confirmed commit %s as the root cause of %s in %s service (heuristic confidence: %d%%).",
+                    sha, excDisplay, result.serviceName(), (int) (topHypothesis.getConfidenceScore() * 100));
+        }
+
+        return String.format("Investigation identified commit %s as a probable contributing change for %s in %s service (heuristic confidence: %d%%). Available evidence supports investigating this change, but does not independently establish active deployment during the incident.",
+                sha, excDisplay, result.serviceName(), (int) (topHypothesis.getConfidenceScore() * 100));
+    }
+
+    private String formatFallbackReasoning(InvestigationResult result, Hypothesis topHypothesis, ConfidenceBreakdown topBreakdown, AgentInvestigationStatus verdict) {
+        if (isWorkingTreeAnomaly(topHypothesis)) {
+            return topHypothesis.getSummary() + "\n\nForensic Analysis:\n"
+                    + "- The repository contains tracked files that physically do not exist on the local filesystem.\n"
+                    + "- HEAD commit tracks all missing files. No commit in repository history contains a deletion diff for these paths.\n"
+                    + "- Physical absence is confirmed by filesystem inspection.\n"
+                    + "- The responsible deletion process (e.g. antivirus quarantine, sync client, script, or user error) is uncorroborated without system audit logs.";
+        }
+
         StringBuilder sb = new StringBuilder();
         sb.append("Deterministic Fallback Analysis:\n");
-        sb.append(String.format("Evaluated %d commits against %d observed error logs. ",
-                result.commitsAnalyzed(), result.errorsDetected()));
-        String sha = getCommitSha(topHypothesis);
-        if (topHypothesis != null && sha != null) {
-            sb.append(String.format("Commit %s emerged as primary hypothesis with normalized confidence score %.2f. ",
-                    sha, topHypothesis.getConfidenceScore()));
-            if (topBreakdown != null) {
-                sb.append(String.format("Scoring breakdown: Temporal points: %.1f, Overlap points: %.1f, Agreement points: %.1f, Contradiction penalties: %.1f. ",
-                        topBreakdown.temporalPoints(), topBreakdown.overlapPoints(), topBreakdown.agreementPoints(), topBreakdown.contradictionPenalty()));
-                if (!topBreakdown.penaltyReasons().isEmpty()) {
-                    sb.append("Identified penalties: ").append(String.join("; ", topBreakdown.penaltyReasons())).append(". ");
-                }
-            }
+
+        String excDisplay = result.primaryException() != null
+                ? result.primaryException().formatChain()
+                : null;
+
+        int logErrors = result.errorsDetected();
+        int commits = result.commitsAnalyzed();
+
+        if (excDisplay != null && logErrors > 0) {
+            sb.append(String.format("Evaluated %d commits against observed runtime failure telemetry (%d error log(s) and crash stack trace: %s). ",
+                    commits, logErrors, excDisplay));
+        } else if (excDisplay != null) {
+            sb.append(String.format("Evaluated %d commits against observed runtime crash stack trace (%s). ",
+                    commits, excDisplay));
         } else {
-            sb.append("No commits exhibited sufficient temporal proximity or code overlap to establish a confident hypothesis.");
+            sb.append(String.format("Evaluated %d commits against %d observed error logs. ",
+                    commits, logErrors));
         }
+
+        String sha = getCommitSha(topHypothesis);
+        if (verdict == AgentInvestigationStatus.INSUFFICIENT_EVIDENCE || topHypothesis == null || sha == null) {
+            sb.append("No candidate commits exhibited sufficient temporal proximity or code/config overlap to establish a confident hypothesis. Honest abstention enforced.");
+            return sb.toString();
+        }
+
+        sb.append(String.format("Commit %s emerged as the leading candidate with heuristic confidence score %d%%. ",
+                sha, (int) (topHypothesis.getConfidenceScore() * 100)));
+
+        if (topBreakdown != null) {
+            sb.append(String.format("Heuristic scoring breakdown: Temporal points: %.1f, Overlap points: %.1f, Agreement points: %.1f, Contradiction penalties: %.1f (raw score: %.1f pts). ",
+                    topBreakdown.temporalPoints(), topBreakdown.overlapPoints(), topBreakdown.agreementPoints(),
+                    topBreakdown.contradictionPenalty(), topBreakdown.rawScore()));
+            if (!topBreakdown.penaltyReasons().isEmpty()) {
+                sb.append("Identified penalties: ").append(String.join("; ", topBreakdown.penaltyReasons())).append(". ");
+            }
+        }
+
+        if (verdict == AgentInvestigationStatus.PROBABLE) {
+            sb.append("Final verdict is PROBABLE: While structural and temporal correlation are strong, independent verification that this configuration was deployed and active during the failure window is required.");
+        } else if (verdict == AgentInvestigationStatus.CONFIRMED) {
+            sb.append("Final verdict is CONFIRMED: Strong deterministic evidence directly links the suspect change to the observed crash with verified deployment/execution proof.");
+        }
+
         return sb.toString();
     }
 
     private List<String> generateDefaultVerificationSteps(InvestigationResult result, Hypothesis topHypothesis) {
+        if (isWorkingTreeAnomaly(topHypothesis)) {
+            return List.of(
+                    "Verify whether files were removed by an external process, script, or environment synchronization.",
+                    "Restore missing working-tree files from HEAD using 'git checkout HEAD -- <paths>' if disappearance was unintended.",
+                    "Review operating system file-system audit logs for process deletion events."
+            );
+        }
+
         List<String> steps = new ArrayList<>();
         String sha = getCommitSha(topHypothesis);
         if (topHypothesis != null && sha != null) {
             steps.add(String.format("Inspect diff of commit %s and review modified classes/configuration.", sha));
-            steps.add("Check runtime connection pool / resource saturation metrics around the failure time.");
+            steps.add("Verify active deployment status: Confirm whether this commit was built, deployed, and active in the target environment at the incident time.");
+            steps.add("Check runtime connection pool / resource saturation metrics around the failure window.");
         }
         if (result.primaryException() != null) {
             steps.add(String.format("Reproduce '%s' in a staging environment with the suspect commit reverted.",
-                    result.primaryException().exceptionType()));
+                    result.primaryException().formatTypeChain()));
         }
         steps.add("Verify health check and active database connection counts during peak load.");
         return steps;
     }
 
-    private List<String> generateDefaultUncertainties(InvestigationResult result, ConfidenceBreakdown topBreakdown) {
+    private List<String> generateDefaultUncertainties(InvestigationResult result, ConfidenceBreakdown topBreakdown, AgentInvestigationStatus verdict) {
+        Hypothesis top = result.hypotheses().isEmpty() ? null : result.hypotheses().getFirst();
+        if (isWorkingTreeAnomaly(top)) {
+            return List.of(
+                    "Git evidence confirms physical absence of tracked files from the working directory, but cannot establish which process (e.g. user action, IDE, antivirus, background sync) removed them without OS filesystem audit logs.",
+                    "No committed deletion exists in repository history (HEAD tracks all missing files)."
+            );
+        }
+
         List<String> uncertainties = new ArrayList<>();
         if (topBreakdown != null && !topBreakdown.penaltyReasons().isEmpty()) {
             uncertainties.addAll(topBreakdown.penaltyReasons());
         }
-        if (!result.evidenceSufficient()) {
-            uncertainties.add("Evidence sample size is limited; additional logs or trace data are recommended.");
+        if (verdict == AgentInvestigationStatus.PROBABLE) {
+            uncertainties.add("Active deployment unconfirmed: Telemetry does not independently verify that the modified configuration or code was deployed and active in the runtime environment during the incident.");
+            uncertainties.add("Concurrency and pool saturation metrics during the failure window should be verified via Prometheus/Grafana or application metrics.");
+        } else if (verdict == AgentInvestigationStatus.INSUFFICIENT_EVIDENCE) {
+            uncertainties.add("Telemetry sample size is insufficient to correlate root cause; additional logs, metrics, or traces required.");
         }
         if (uncertainties.isEmpty()) {
             uncertainties.add("No critical contradictions detected among analyzed evidence.");

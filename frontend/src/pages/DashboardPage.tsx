@@ -14,6 +14,10 @@ import { RecentInvestigations } from '../components/dashboard/RecentInvestigatio
 import { LoadingSpinner } from '../components/shared/LoadingSpinner';
 import { investigationApi } from '../api/investigationApi';
 import type { InvestigationAgentReport, InvestigationResponse } from '../api/types';
+import {
+  AuthoritativeInvestigationItem,
+  buildAuthoritativeInvestigations,
+} from '../utils/verdictAggregation';
 
 export const DashboardPage: React.FC = () => {
   const [investigations, setInvestigations] = useState<InvestigationResponse[]>([]);
@@ -41,6 +45,10 @@ export const DashboardPage: React.FC = () => {
   useEffect(() => {
     loadData();
   }, []);
+
+  const authoritativeItems: AuthoritativeInvestigationItem[] = React.useMemo(() => {
+    return buildAuthoritativeInvestigations(investigations, agentReports);
+  }, [investigations, agentReports]);
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6">
@@ -93,14 +101,22 @@ export const DashboardPage: React.FC = () => {
 
       {/* Real Statistics */}
       {!isLoading && (
-        <StatsOverview investigations={investigations} agentReports={agentReports} />
+        <StatsOverview
+          authoritativeItems={authoritativeItems}
+          investigations={investigations}
+          agentReports={agentReports}
+        />
       )}
 
       {/* Recent Investigations or Empty State */}
       {!isLoading && (
         <>
-          {investigations.length > 0 ? (
-            <RecentInvestigations investigations={investigations} />
+          {authoritativeItems.length > 0 ? (
+            <RecentInvestigations
+              authoritativeItems={authoritativeItems}
+              investigations={investigations}
+              agentReports={agentReports}
+            />
           ) : (
             <div className="rounded-2xl border border-dark-700 bg-dark-900/60 p-8 text-center space-y-4">
               <div className="w-12 h-12 rounded-2xl bg-dark-800 border border-dark-700 mx-auto flex items-center justify-center text-brand-amber">

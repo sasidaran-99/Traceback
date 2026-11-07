@@ -10,5 +10,6 @@ public enum EvidenceType {
     STACK_TRACE,
     STACK_FRAME,
     LOG_ERROR,
-    ERROR_SIGNATURE
+    ERROR_SIGNATURE,
+    WORKING_TREE_CHANGE
 }

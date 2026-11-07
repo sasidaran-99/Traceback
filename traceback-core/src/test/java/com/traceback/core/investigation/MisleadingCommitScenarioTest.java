@@ -1,8 +1,13 @@
 package com.traceback.core.investigation;
 
+import com.traceback.core.correlation.CorrelationEngine;
 import com.traceback.core.domain.Hypothesis;
 import com.traceback.core.evidence.ConcreteEvidenceRegistry;
 import com.traceback.core.evidence.EvidenceItem;
+import com.traceback.core.git.GitCollector;
+import com.traceback.core.log.LogAnalyzer;
+import com.traceback.core.stacktrace.StackTraceParser;
+import com.traceback.core.timeline.TimelineBuilder;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.lib.PersonIdent;
 import org.junit.jupiter.api.DisplayName;
@@ -73,7 +78,14 @@ class MisleadingCommitScenarioTest {
                 """;
 
         // 3. Execute deterministic investigation
-        InvestigationService investigationService = new InvestigationService();
+        InvestigationService investigationService = new InvestigationService(
+                new GitCollector(),
+                new StackTraceParser(),
+                new LogAnalyzer(),
+                new TimelineBuilder(),
+                new CorrelationEngine(),
+                new ConcreteEvidenceRegistry()
+        );
         InvestigationResult result = investigationService.startInvestigation(
                 tempRepo.toString(),
                 null, // no standalone stack trace; parsed from logs

@@ -145,12 +145,19 @@ export const SummaryCard: React.FC<SummaryCardProps> = ({
               {status === 'CONFIRMED'
                 ? 'Strong deterministic evidence links the suspect change directly to the observed crash stack with zero unrefuted counter-evidence.'
                 : status === 'PROBABLE'
-                ? 'High probability root cause identified, but manual inspection of surrounding dependencies or concurrency is recommended.'
+                ? 'Plausible contributing change identified with strong structural overlap. The evidence supports investigating this change, but does not independently establish that the modified configuration was deployed or active during the incident.'
                 : 'Available telemetry is insufficient or inconclusive to establish causal proof. Honest abstention enforced.'}
             </p>
           </div>
-          <div className="mt-3 pt-3 border-t border-dark-800 text-[11px] text-dark-500 font-mono">
-            Grounding invariant: Claims strictly verified against local evidence registry.
+          <div className="mt-3 pt-3 border-t border-dark-800 space-y-1">
+            <div className="text-[11px] font-mono text-dark-400 flex items-center justify-between">
+              <span className="text-dark-500">Observed Facts:</span>
+              <span className="text-dark-300">Telemetry & Git Commits</span>
+            </div>
+            <div className="text-[11px] font-mono text-dark-400 flex items-center justify-between">
+              <span className="text-dark-500">Inferred Conclusion:</span>
+              <span className="text-brand-amber font-semibold">Heuristic Grounded Hypothesis</span>
+            </div>
           </div>
         </div>
       </div>

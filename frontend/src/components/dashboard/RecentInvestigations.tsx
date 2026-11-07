@@ -1,18 +1,31 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowRight } from 'lucide-react';
+import { ArrowRight, HelpCircle } from 'lucide-react';
 import { StatusPill } from '../shared/StatusPill';
 import { formatConfidence } from '../../utils/formatters';
-import type { InvestigationResponse } from '../../api/types';
+import type { InvestigationAgentReport, InvestigationResponse } from '../../api/types';
+import {
+  AuthoritativeInvestigationItem,
+  buildAuthoritativeInvestigations,
+} from '../../utils/verdictAggregation';
 
 interface RecentInvestigationsProps {
-  investigations: InvestigationResponse[];
+  investigations?: InvestigationResponse[];
+  agentReports?: InvestigationAgentReport[];
+  authoritativeItems?: AuthoritativeInvestigationItem[];
 }
 
 export const RecentInvestigations: React.FC<RecentInvestigationsProps> = ({
-  investigations,
+  investigations = [],
+  agentReports = [],
+  authoritativeItems,
 }) => {
-  if (!investigations || investigations.length === 0) {
+  const items: AuthoritativeInvestigationItem[] = React.useMemo(() => {
+    if (authoritativeItems) return authoritativeItems;
+    return buildAuthoritativeInvestigations(investigations, agentReports);
+  }, [authoritativeItems, investigations, agentReports]);
+
+  if (!items || items.length === 0) {
     return null;
   }
 
@@ -24,14 +37,14 @@ export const RecentInvestigations: React.FC<RecentInvestigationsProps> = ({
             Recent Failure Investigations
           </h3>
           <p className="text-xs text-dark-400 mt-0.5">
-            Real investigation records available in backend memory
+            Live records available in current server session (in-memory runtime)
           </p>
         </div>
         <Link
           to="/history"
           className="text-xs font-mono text-brand-amber hover:text-amber-400 flex items-center gap-1 transition-colors"
         >
-          <span>View All ({investigations.length})</span>
+          <span>View All ({items.length})</span>
           <ArrowRight className="w-3.5 h-3.5" />
         </Link>
       </div>
@@ -42,15 +55,23 @@ export const RecentInvestigations: React.FC<RecentInvestigationsProps> = ({
             <tr>
               <th className="py-3 px-4">Investigation ID</th>
               <th className="py-3 px-4">Service & Env</th>
-              <th className="py-3 px-4">Status</th>
+              <th className="py-3 px-4">Verdict / Status</th>
               <th className="py-3 px-4">Analyzed</th>
               <th className="py-3 px-4">Top Root-Cause Hypothesis</th>
-              <th className="py-3 px-4">Confidence</th>
+              <th className="py-3 px-4">
+                <span
+                  className="inline-flex items-center gap-1 cursor-help border-b border-dotted border-dark-500"
+                  title="Heuristic confidence score based on deterministic scoring formula (S = T + O + A - C), not an empirical or statistical probability."
+                >
+                  <span>Heuristic Score</span>
+                  <HelpCircle className="w-3 h-3 text-dark-500" />
+                </span>
+              </th>
               <th className="py-3 px-4 text-right">Action</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-dark-800 text-dark-200 font-mono">
-            {investigations.slice(0, 5).map((inv) => (
+            {items.slice(0, 5).map((inv) => (
               <tr key={inv.investigationId} className="hover:bg-dark-850/50 transition-colors">
                 <td className="py-3 px-4 font-bold text-dark-100">
                   <span className="truncate block max-w-[120px]">
@@ -64,14 +85,14 @@ export const RecentInvestigations: React.FC<RecentInvestigationsProps> = ({
                   </span>
                 </td>
                 <td className="py-3 px-4">
-                  <StatusPill status={inv.status} size="sm" />
+                  <StatusPill status={inv.verdict} size="sm" />
                 </td>
                 <td className="py-3 px-4 text-dark-400 text-[11px]">
                   <span>{inv.commitsAnalyzed} commits</span>
                   <span className="text-dark-600 block">{inv.errorsDetected} errors</span>
                 </td>
                 <td className="py-3 px-4 max-w-xs truncate text-dark-300 font-sans text-xs">
-                  {inv.topHypothesis?.summary || 'Inconclusive / No Hypotheses'}
+                  {inv.topHypothesis?.summary || (inv.verdict === 'INSUFFICIENT_EVIDENCE' ? 'Inconclusive telemetry / Abstention' : 'Inconclusive / No Hypotheses')}
                 </td>
                 <td className="py-3 px-4">
                   {inv.topHypothesis ? (
@@ -79,8 +100,11 @@ export const RecentInvestigations: React.FC<RecentInvestigationsProps> = ({
                       className={`font-bold ${
                         inv.topHypothesis.confidenceScore >= 0.7
                           ? 'text-emerald-400'
-                          : 'text-amber-400'
+                          : inv.topHypothesis.confidenceScore >= 0.4
+                          ? 'text-amber-400'
+                          : 'text-dark-400'
                       }`}
+                      title={`Heuristic confidence score: ${formatConfidence(inv.topHypothesis.confidenceScore)} (deterministic rank, not a statistical probability)`}
                     >
                       {formatConfidence(inv.topHypothesis.confidenceScore)}
                     </span>

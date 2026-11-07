@@ -137,7 +137,7 @@ export const InvestigationDetailPage: React.FC = () => {
         <div className="p-4 rounded-xl border border-rose-500/30 bg-rose-500/10 text-xs text-rose-300">
           <AlertCircle className="w-6 h-6 mx-auto mb-2 text-rose-400" />
           <h3 className="font-mono font-bold text-sm mb-1">Investigation Dossier Not Found</h3>
-          <p>{error || `No investigation with ID '${id}' found in backend memory.`}</p>
+          <p>{error || `No investigation with ID '${id}' found in active session records (runtime memory).`}</p>
         </div>
         <div className="flex justify-center gap-3">
           <button

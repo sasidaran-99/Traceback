@@ -151,8 +151,55 @@ public class DeterministicClaimValidator implements ClaimValidator {
     }
 
     private ValidationSupportResult checkLogicalSupport(String claimStatement, List<EvidenceItem> items) {
-        // If claim asserts code regression / crash in a file
-        if (claimStatement.contains("code regression") || claimStatement.contains("stack frame") || claimStatement.contains(".java")) {
+        // 1. Reject claims that confuse working-tree deletions with committed deletions
+        boolean assertsCommittedDeletion = (claimStatement.matches(".*\\bcommitted\\s+deletion\\b.*")
+                || (claimStatement.matches(".*\\bcommit\\b.*") && claimStatement.matches(".*\\b(deleted|deletion)\\b.*")))
+                && !claimStatement.contains("no committed deletion")
+                && !claimStatement.contains("without committed deletion")
+                && !claimStatement.contains("zero committed deletion");
+
+        if (assertsCommittedDeletion) {
+            boolean allWorkingTree = items.stream().allMatch(i -> i.evidenceType() == EvidenceType.WORKING_TREE_CHANGE);
+            boolean hasUnstagedMissing = items.stream().anyMatch(i ->
+                    i.evidenceType() == EvidenceType.WORKING_TREE_CHANGE &&
+                    "UNSTAGED".equalsIgnoreCase(String.valueOf(i.metadata().get("stagingState")))
+            );
+            if (allWorkingTree || hasUnstagedMissing) {
+                return new ValidationSupportResult(false,
+                        "Claim asserts committed deletion in repository history, but cited evidence items are uncommitted working tree changes (unstaged file disappearance).");
+            }
+        }
+
+        // 2. Reject claims asserting an unverified deletion process without system audit evidence
+        boolean assertsDeletionProcess = claimStatement.matches(".*\\b(onedrive|antivirus|defender|ide|user\\s+deleted|rm\\s+-rf|external\\s+sync|sync\\s+client)\\b.*");
+
+        if (assertsDeletionProcess) {
+            boolean hasSystemAuditEvidence = items.stream().anyMatch(i ->
+                    "SYSTEM_AUDIT".equalsIgnoreCase(i.source()) ||
+                    "OS_LOG".equalsIgnoreCase(i.source())
+            );
+            if (!hasSystemAuditEvidence) {
+                return new ValidationSupportResult(false,
+                        "Claim asserts specific deletion process without corroborating system audit log or OS process tracking evidence.");
+            }
+        }
+
+        // 3. Claims asserting working tree anomalies / missing files must be backed by WORKING_TREE_CHANGE evidence
+        boolean assertsWorkingTreeMissing = claimStatement.contains("working tree")
+                && (claimStatement.contains("missing") || claimStatement.contains("absent") || claimStatement.contains("disappear"));
+
+        if (assertsWorkingTreeMissing) {
+            boolean hasWorkingTreeEvidence = items.stream().anyMatch(i ->
+                    i.evidenceType() == EvidenceType.WORKING_TREE_CHANGE
+            );
+            if (!hasWorkingTreeEvidence) {
+                return new ValidationSupportResult(false,
+                        "Claim asserts working tree missing files, but cited evidence contains no WORKING_TREE_CHANGE evidence.");
+            }
+        }
+
+        // If claim asserts code regression / crash in a file (and is not an uncommitted working tree claim)
+        if (!assertsWorkingTreeMissing && (claimStatement.contains("code regression") || claimStatement.contains("stack frame") || claimStatement.contains(".java"))) {
             boolean hasCodeOrStackEvidence = items.stream().anyMatch(i ->
                     i.evidenceType() == EvidenceType.STACK_FRAME ||
                     i.evidenceType() == EvidenceType.COMMIT_DIFF ||
@@ -163,8 +210,8 @@ public class DeterministicClaimValidator implements ClaimValidator {
             }
         }
 
-        // If claim asserts configuration failure
-        if (claimStatement.contains("config") || claimStatement.contains("timeout") || claimStatement.contains("connection")) {
+        // If claim asserts configuration failure (and is not an uncommitted working tree claim)
+        if (!assertsWorkingTreeMissing && (claimStatement.contains("config") || claimStatement.contains("timeout") || claimStatement.contains("connection"))) {
             boolean hasConfigOrTimeoutEvidence = items.stream().anyMatch(i ->
                     i.evidenceType() == EvidenceType.CONFIG_DIFF ||
                     i.evidenceType() == EvidenceType.ERROR_SIGNATURE ||

@@ -1,60 +1,75 @@
 import React from 'react';
 import { ShieldCheck, GitBranch, AlertTriangle, Activity } from 'lucide-react';
 import type { InvestigationAgentReport, InvestigationResponse } from '../../api/types';
+import {
+  AuthoritativeInvestigationItem,
+  VerdictMetrics,
+  buildAuthoritativeInvestigations,
+  calculateVerdictMetrics,
+} from '../../utils/verdictAggregation';
 
 interface StatsOverviewProps {
-  investigations: InvestigationResponse[];
-  agentReports: InvestigationAgentReport[];
+  investigations?: InvestigationResponse[];
+  agentReports?: InvestigationAgentReport[];
+  authoritativeItems?: AuthoritativeInvestigationItem[];
+  metrics?: VerdictMetrics;
 }
 
 export const StatsOverview: React.FC<StatsOverviewProps> = ({
-  investigations,
-  agentReports,
+  investigations = [],
+  agentReports = [],
+  authoritativeItems,
+  metrics,
 }) => {
-  const total = investigations.length;
+  const effectiveMetrics: VerdictMetrics = React.useMemo(() => {
+    if (metrics) return metrics;
+    const items =
+      authoritativeItems || buildAuthoritativeInvestigations(investigations, agentReports);
+    return calculateVerdictMetrics(items);
+  }, [metrics, authoritativeItems, investigations, agentReports]);
 
-  const totalHypotheses = investigations.reduce(
-    (acc, inv) => acc + (inv.hypothesesCount || 0),
-    0
-  );
+  const total = effectiveMetrics.totalAnalyzed;
 
-  const totalErrors = investigations.reduce(
-    (acc, inv) => acc + (inv.errorsDetected || 0),
-    0
-  );
-
-  const confirmedCount = agentReports.filter((r) => r.finalStatus === 'CONFIRMED').length;
-  const probableCount = agentReports.filter((r) => r.finalStatus === 'PROBABLE').length;
-  const insufficientCount = agentReports.filter(
-    (r) => r.finalStatus === 'INSUFFICIENT_EVIDENCE'
-  ).length;
+  const formatVerdictSubtitle = (m: VerdictMetrics): string => {
+    let text = `${m.probableCount} Probable | ${m.insufficientCount} Insufficient`;
+    if (m.pendingReportCount > 0) {
+      text += ` | ${m.pendingReportCount} Pending`;
+    }
+    if (m.failedCount > 0) {
+      text += ` | ${m.failedCount} Failed`;
+    }
+    return text;
+  };
 
   const stats = [
     {
       label: 'Investigations Analyzed',
       value: total,
-      sub: total > 0 ? `${total} active in memory` : 'No runs yet',
+      sub:
+        total > 0
+          ? `${total} live session record${total === 1 ? '' : 's'} (in-memory runtime)`
+          : 'No runs yet',
       icon: Activity,
       color: 'text-brand-amber',
     },
     {
       label: 'Hypotheses Evaluated',
-      value: totalHypotheses,
-      sub: `${investigations.reduce((acc, i) => acc + i.commitsAnalyzed, 0)} commits examined`,
+      value: effectiveMetrics.totalHypotheses,
+      sub: `${effectiveMetrics.totalCommits} commits examined`,
       icon: GitBranch,
       color: 'text-blue-400',
     },
     {
       label: 'Errors Diagnosed',
-      value: totalErrors,
+      value: effectiveMetrics.totalErrors,
       sub: 'Multi-line Java crash logs',
       icon: AlertTriangle,
       color: 'text-rose-400',
     },
     {
       label: 'Agent Root-Cause Verdicts',
-      value: `${confirmedCount} Confirmed`,
-      sub: `${probableCount} Probable | ${insufficientCount} Insufficient`,
+      value: `${effectiveMetrics.confirmedCount} Confirmed`,
+      sub: formatVerdictSubtitle(effectiveMetrics),
       icon: ShieldCheck,
       color: 'text-emerald-400',
     },

@@ -71,4 +71,30 @@ public record ParsedException(
         }
         return Optional.empty();
     }
+
+    /**
+     * Formats the exception hierarchy into a readable chain showing wrapper and root cause.
+     * e.g. "org.springframework.dao.CannotAcquireLockException (caused by java.sql.SQLTransientConnectionException: HikariPool-1 - Connection is not available, request timed out after 3000ms.)"
+     */
+    public String formatChain() {
+        ParsedException root = getRootCause();
+        if (root != null && !root.equals(this)) {
+            String rootMsg = root.message() != null && !root.message().isBlank() ? ": " + root.message() : "";
+            return exceptionType + " (caused by " + root.exceptionType() + rootMsg + ")";
+        }
+        String msg = message != null && !message.isBlank() ? ": " + message : "";
+        return exceptionType + msg;
+    }
+
+    /**
+     * Formats exception type with its root cause type if nested.
+     * e.g. "org.springframework.dao.CannotAcquireLockException (caused by java.sql.SQLTransientConnectionException)"
+     */
+    public String formatTypeChain() {
+        ParsedException root = getRootCause();
+        if (root != null && !root.equals(this)) {
+            return exceptionType + " (caused by " + root.exceptionType() + ")";
+        }
+        return exceptionType;
+    }
 }

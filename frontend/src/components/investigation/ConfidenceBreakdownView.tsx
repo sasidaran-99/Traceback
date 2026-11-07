@@ -81,7 +81,7 @@ export const ConfidenceBreakdownView: React.FC<ConfidenceBreakdownViewProps> = (
           </div>
           <div className="h-6 w-px bg-dark-700" />
           <div className="text-right">
-            <span className="text-[10px] uppercase font-mono text-dark-400 block">Normalized</span>
+            <span className="text-[10px] font-mono text-dark-400 block">Heuristic confidence score</span>
             <span className="font-mono text-base font-bold text-brand-amber">
               {formatConfidence(breakdown.normalizedScore ?? overallScore)}
             </span>
@@ -166,7 +166,7 @@ export const ConfidenceBreakdownView: React.FC<ConfidenceBreakdownViewProps> = (
       <div className="p-3 rounded-lg border border-amber-500/20 bg-amber-500/5 text-xs text-amber-300/90 flex items-start gap-2.5">
         <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
         <p className="leading-relaxed font-sans text-[11px]">
-          <strong className="font-semibold text-amber-300">Decision-Support Notice:</strong> The confidence score is a heuristic ranking mechanism based on deterministic factors, not a statistically calibrated probability. Temporal proximity alone ($O = 0$) cannot prove causation.
+          <strong className="font-semibold text-amber-300">Decision-Support Notice:</strong> The heuristic confidence score ranks candidate hypotheses based on deterministic factors (temporal proximity, code/config overlap, independent agreement, and contradiction penalties). It represents the relative strength of code/config and temporal correlation among available commits. It does <em>not</em> represent an empirical probability of failure causation or proof of active production deployment.
         </p>
       </div>
     </div>

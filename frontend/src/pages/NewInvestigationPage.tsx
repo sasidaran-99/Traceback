@@ -35,10 +35,12 @@ export const NewInvestigationPage: React.FC = () => {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Quick Preset Handlers
+  const defaultExampleRepoPath = import.meta.env.VITE_DEFAULT_REPO_PATH || 'C:/Users/developer/projects/TraceBack';
+
   const loadHikariCPExample = () => {
     setServiceName('order-service');
     setEnvironment('production');
-    setRepositoryPath('C:/Users/Sasidaran/Desktop/Sasidaran/Projects/TraceBack');
+    setRepositoryPath(defaultExampleRepoPath);
     setLogContent(`2026-10-10 14:15:22.100 ERROR 1420 --- [HikariPool-1] org.postgresql.Driver : java.sql.SQLTimeoutException: Connection timeout after 30000ms.
     at com.zaxxer.hikari.pool.HikariPool.createTimeoutException(HikariPool.java:696)
     at com.zaxxer.hikari.pool.HikariPool.getConnection(HikariPool.java:197)
@@ -54,7 +56,7 @@ export const NewInvestigationPage: React.FC = () => {
   const loadPaymentRegressionExample = () => {
     setServiceName('payment-service');
     setEnvironment('production');
-    setRepositoryPath('C:/Users/Sasidaran/Desktop/Sasidaran/Projects/TraceBack');
+    setRepositoryPath(defaultExampleRepoPath);
     setLogContent(`2026-10-10 14:16:35.100 ERROR 100 --- [http-nio-8080-exec-1] c.t.payment.PaymentService : java.lang.ArithmeticException: / by zero
     at com.traceback.payment.FeeCalculator.calculateFee(FeeCalculator.java:38)
     at com.traceback.payment.PaymentService.charge(PaymentService.java:55)
@@ -223,7 +225,7 @@ export const NewInvestigationPage: React.FC = () => {
                   required
                   value={repositoryPath}
                   onChange={(e) => setRepositoryPath(e.target.value)}
-                  placeholder="e.g. C:/Users/Sasidaran/Desktop/Sasidaran/Projects/TraceBack"
+                  placeholder="e.g. C:/Users/developer/projects/TraceBack or /workspace/TraceBack"
                   className="w-full pl-9 pr-3.5 py-2.5 rounded-lg border border-dark-700 bg-dark-950 font-mono text-xs text-dark-100 placeholder:text-dark-600 focus:outline-none focus:border-brand-amber"
                 />
                 <FolderOpen className="w-4 h-4 text-dark-500 absolute left-3 top-3" />

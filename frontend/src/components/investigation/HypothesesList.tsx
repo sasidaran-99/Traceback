@@ -83,7 +83,7 @@ export const HypothesesList: React.FC<HypothesesListProps> = ({ hypotheses }) =>
                 {/* Confidence Pill */}
                 <div className="text-right">
                   <div className="flex items-center gap-1.5 justify-end">
-                    <span className="text-[10px] uppercase font-mono text-dark-400">Heuristic Score</span>
+                    <span className="text-[10px] font-mono text-dark-400">Heuristic confidence score:</span>
                     <span
                       className={`font-mono text-sm font-bold ${
                         h.confidenceScore >= 0.7

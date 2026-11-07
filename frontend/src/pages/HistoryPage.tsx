@@ -51,7 +51,7 @@ export const HistoryPage: React.FC = () => {
             Investigation History
           </h2>
           <p className="text-xs text-dark-400 mt-1">
-            Complete record of autonomous failure analyses held in backend memory.
+            Complete record of autonomous failure analyses held in active server memory (runtime session).
           </p>
         </div>
 
@@ -118,7 +118,14 @@ export const HistoryPage: React.FC = () => {
                   <th className="py-3 px-4">Status</th>
                   <th className="py-3 px-4">Commits / Errors</th>
                   <th className="py-3 px-4">Leading Root-Cause Hypothesis</th>
-                  <th className="py-3 px-4">Score</th>
+                  <th className="py-3 px-4">
+                    <span
+                      className="cursor-help border-b border-dotted border-dark-500"
+                      title="Heuristic confidence score based on deterministic scoring formula (S = T + O + A - C), not an empirical or statistical probability."
+                    >
+                      Heuristic Score
+                    </span>
+                  </th>
                   <th className="py-3 px-4">Date</th>
                   <th className="py-3 px-4 text-right">Dossier</th>
                 </tr>
@@ -155,6 +162,7 @@ export const HistoryPage: React.FC = () => {
                               ? 'text-emerald-400'
                               : 'text-amber-400'
                           }`}
+                          title={`Heuristic confidence score: ${formatConfidence(inv.topHypothesis.confidenceScore)} (deterministic rank, not a statistical probability)`}
                         >
                           {formatConfidence(inv.topHypothesis.confidenceScore)}
                         </span>

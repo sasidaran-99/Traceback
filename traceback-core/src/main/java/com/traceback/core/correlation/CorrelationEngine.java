@@ -1,5 +1,8 @@
 package com.traceback.core.correlation;
 
+import com.traceback.core.domain.Event;
+import com.traceback.core.domain.EventSource;
+import com.traceback.core.domain.EventType;
 import com.traceback.core.domain.Hypothesis;
 import com.traceback.core.domain.HypothesisStatus;
 import com.traceback.core.domain.Incident;
@@ -11,6 +14,8 @@ import com.traceback.core.evidence.EvidenceType;
 import com.traceback.core.git.ChangedFile;
 import com.traceback.core.git.CommitEvidence;
 import com.traceback.core.git.GitCommitAnalyzer;
+import com.traceback.core.git.workingtree.WorkingTreeEvidence;
+import com.traceback.core.git.workingtree.WorkingTreeSnapshot;
 import com.traceback.core.log.LogEvidence;
 import com.traceback.core.stacktrace.ParsedException;
 import com.traceback.core.stacktrace.StackTraceFrame;
@@ -77,6 +82,28 @@ public class CorrelationEngine {
                                         ParsedException parsedStack,
                                         EvidenceRegistry evidenceRegistry,
                                         int windowMinutes) {
+        return correlate(incident, commits, logEvidence, parsedStack, null, evidenceRegistry, windowMinutes);
+    }
+
+    /**
+     * Executes deterministic correlation across collected data including working tree forensics.
+     *
+     * @param incident            the incident being investigated (or simulated aggregate)
+     * @param commits             collected Git commits in reverse chronological order
+     * @param logEvidence         parsed application log evidence
+     * @param parsedStack         standalone parsed stack trace (if any)
+     * @param workingTreeSnapshot forensic working tree snapshot (if available)
+     * @param evidenceRegistry    registry to register and lookup concrete evidence items
+     * @param windowMinutes       temporal pre-incident window in minutes
+     * @return correlation result containing typed relationships, ranked hypotheses, and validated claims
+     */
+    public CorrelationResult correlate(Incident incident,
+                                        List<CommitEvidence> commits,
+                                        LogEvidence logEvidence,
+                                        ParsedException parsedStack,
+                                        WorkingTreeSnapshot workingTreeSnapshot,
+                                        EvidenceRegistry evidenceRegistry,
+                                        int windowMinutes) {
 
         List<Relationship> relationships = new ArrayList<>();
         Map<String, List<String>> evidenceByCommit = new HashMap<>();
@@ -117,7 +144,9 @@ public class CorrelationEngine {
             }
         }
 
-        if (commits == null || commits.isEmpty()) {
+        boolean hasWorkingTreeAnomaly = workingTreeSnapshot != null && workingTreeSnapshot.hasMissingTrackedFiles();
+
+        if ((commits == null || commits.isEmpty()) && !hasWorkingTreeAnomaly) {
             Hypothesis abstention = buildAbstentionHypothesis(incident, "No candidate commits found within the investigation window.");
             return new CorrelationResult(
                     relationships,
@@ -130,7 +159,8 @@ public class CorrelationEngine {
             );
         }
 
-        for (CommitEvidence commit : commits) {
+        if (commits != null) {
+            for (CommitEvidence commit : commits) {
             String sha = commit.commitSha();
             List<String> evidenceIds = new ArrayList<>();
             List<String> contraEvidenceIds = new ArrayList<>();
@@ -288,7 +318,7 @@ public class CorrelationEngine {
                                     failureOnset,
                                     RelationshipType.INFERRED_CONFIG_KEY,
                                     0.95,
-                                    "Configuration change in '" + key + "' (" + delta + ") corresponds directly to runtime error: " + errorSummary,
+                                    "Configuration change in '" + key + "' (" + delta + ") aligns with runtime error symptom: " + errorSummary,
                                     "{\"configKey\":\"" + key + "\",\"delta\":\"" + delta + "\"}"
                             );
                             relationships.add(rel);
@@ -455,6 +485,7 @@ public class CorrelationEngine {
                     penaltyReasons
             ));
         }
+    }
 
         // Sort candidates descending by confidence score, then by timestamp descending
         scoredCandidates.sort((a, b) -> {
@@ -492,22 +523,30 @@ public class CorrelationEngine {
                 List<String> modifiedKeys = commit.changedFiles().stream()
                         .flatMap(cf -> cf.configChanges().keySet().stream())
                         .toList();
-                String keyDetails = modifiedKeys.isEmpty() ? "timeout/connection settings" : String.join(", ", modifiedKeys);
+                String keyDetails = modifiedKeys.isEmpty() ? "configuration settings" : String.join(", ", modifiedKeys);
 
-                summary = "Configuration change in commit " + commit.shortSha() + " (" + commit.commitMessage() +
-                        ") directly triggered runtime failure: " + errorSummary;
+                StringBuilder sb = new StringBuilder();
+                sb.append("Potential contributing change in commit ").append(commit.shortSha());
+                sb.append(" (\"").append(commit.commitMessage()).append("\"): ");
+                sb.append("modified configuration settings (").append(keyDetails).append(")");
+                if (errorSummary != null && !errorSummary.isBlank()) {
+                    sb.append(" aligning with runtime failure symptom (").append(errorSummary).append(")");
+                }
+                sb.append(". The available evidence supports investigating this change, but does not independently establish that the modified configuration was deployed or active during the incident.");
+                summary = sb.toString();
+
                 verificationPlan = "1. Review configuration git diff for commit " + commit.shortSha() + ".\n" +
                         "2. Check if configuration settings (" + keyDetails + ") are reverted to safe thresholds.\n" +
-                        "3. Redeploy or restart service to confirm failure clears.";
+                        "3. Verify whether this configuration was active in production during the failure window via deployment/metrics history.";
             } else if (cand.hasStructuralOverlap()) {
-                summary = "Code regression in commit " + commit.shortSha() + " (" + commit.commitMessage() +
-                        ") matches runtime crash stack frame.";
+                summary = "Code regression in commit " + commit.shortSha() + " (\"" + commit.commitMessage() +
+                        "\"): modified file matches runtime crash stack frame. Available evidence supports code correlation, but does not independently establish active deployment timing.";
                 verificationPlan = "1. Inspect git diff for commit " + commit.shortSha() + ".\n" +
                         "2. Run unit tests matching modified classes.\n" +
-                        "3. Revert commit or deploy fix.";
+                        "3. Verify deployment logs and revert commit or deploy fix.";
             } else {
-                summary = "Candidate commit " + commit.shortSha() + " (" + commit.commitMessage() +
-                        ") shows weak correlation (confidence: " + (int) (confidence * 100) + "%).";
+                summary = "Candidate commit " + commit.shortSha() + " (\"" + commit.commitMessage() +
+                        "\") shows weak correlation (heuristic confidence: " + (int) (confidence * 100) + "%).";
                 verificationPlan = "1. Verify whether commit has any indirect impact on runtime dependencies.";
             }
 
@@ -515,10 +554,21 @@ public class CorrelationEngine {
 
             String rankingExplanation = buildRankingExplanation(rank, cand);
 
+            Event candidateEvent = new Event(
+                    UUID.randomUUID(),
+                    commit.hasConfigurationChanges() ? EventType.CONFIG_CHANGE : EventType.COMMIT,
+                    EventSource.GITHUB,
+                    incident != null ? incident.getServiceName() : "application",
+                    incident != null ? incident.getEnvironment() : "production",
+                    commit.timestamp(),
+                    commit.commitSha(),
+                    "{\"message\":\"" + commit.commitMessage().replace("\"", "\\\"") + "\"}"
+            );
+
             Hypothesis hypothesis = new Hypothesis(
                     UUID.randomUUID(),
                     incident,
-                    null,
+                    candidateEvent,
                     rank++,
                     confidence,
                     status,
@@ -553,6 +603,87 @@ public class CorrelationEngine {
             claims.add(validatedClaim);
         }
 
+        // If working tree forensic discrepancies exist, generate top-priority hypothesis
+        if (hasWorkingTreeAnomaly) {
+            int missingCount = workingTreeSnapshot.missingTrackedCount();
+            String headSha = workingTreeSnapshot.headCommitSha();
+            String shortHead = (headSha != null && headSha.length() >= 7) ? headSha.substring(0, 7) : (headSha != null ? headSha : "UNKNOWN");
+
+            String summary = String.format(
+                    "Working tree anomaly: %d tracked files missing from disk (present in HEAD %s). No committed deletion was identified in Git history. The process responsible for their disappearance is not established.",
+                    missingCount, shortHead
+            );
+            String counterEvidence = String.format(
+                    "No committed deletions exist in the repository history for the %d missing files.",
+                    missingCount
+            );
+            String verificationPlan = "1. Verify whether files were removed by an external process, script, or environment synchronization.\n2. Restore missing working-tree files from HEAD using 'git checkout HEAD -- <paths>' if disappearance was unintended.\n3. Review operating system file-system audit logs for process deletion events.";
+
+            List<String> missingEvidenceIds = workingTreeSnapshot.getMissingFiles().stream()
+                    .map(WorkingTreeEvidence::evidenceId)
+                    .toList();
+
+            ConfidenceBreakdown wtBreakdown = ConfidenceBreakdown.calculate(
+                    30.0, 30.0, 25.0, 0.0,
+                    List.of("RULE_WT_MISSING_TRACKED_FILES: Working tree anomaly with missing tracked files"),
+                    Collections.emptyList()
+            );
+
+            String rankingExplanation = String.format(
+                    "Ranked #1: Working tree anomaly detected with %d missing tracked files present in HEAD %s.",
+                    missingCount, shortHead
+            );
+
+            Hypothesis wtHypothesis = new Hypothesis(
+                    UUID.randomUUID(),
+                    incident,
+                    null,
+                    1,
+                    0.85,
+                    HypothesisStatus.CONFIRMED,
+                    summary,
+                    verificationPlan,
+                    counterEvidence,
+                    missingEvidenceIds,
+                    Collections.emptyList(),
+                    List.of("RULE_WT_MISSING_TRACKED_FILES"),
+                    Map.of("RULE_WT_MISSING_TRACKED_FILES", String.format("%d tracked files physically missing from working directory but retained in HEAD %s", missingCount, shortHead)),
+                    Collections.emptyList(),
+                    rankingExplanation,
+                    wtBreakdown
+            );
+
+            // Register in lookup maps
+            evidenceByCommit.put("WORKING_TREE", missingEvidenceIds);
+            counterEvidenceByCommit.put("WORKING_TREE", counterEvidence);
+            breakdownsByCommit.put("WORKING_TREE", wtBreakdown);
+            if (headSha != null && !headSha.isBlank()) {
+                evidenceByCommit.put(headSha, missingEvidenceIds);
+                counterEvidenceByCommit.put(headSha, counterEvidence);
+                breakdownsByCommit.put(headSha, wtBreakdown);
+            }
+
+            // Generate backing investigation claim and validate
+            InvestigationClaim rawClaim = InvestigationClaim.create(
+                    "CLM-WT-ANOMALY",
+                    incident != null ? incident.getId() : UUID.randomUUID(),
+                    summary,
+                    missingEvidenceIds,
+                    Collections.emptyList()
+            );
+
+            InvestigationClaim validatedClaim = claimValidator.validateClaim(
+                    rawClaim,
+                    incident != null ? incident.getId() : null,
+                    evidenceRegistry
+            );
+            claims.add(0, validatedClaim);
+
+            // Insert wtHypothesis at rank #1
+            hypotheses.add(0, wtHypothesis);
+            evidenceSufficient = true;
+        }
+
         // If evidence is insufficient across all candidates, prepend/provide an explicit abstention hypothesis
         if (!evidenceSufficient && !commits.isEmpty()) {
             Hypothesis abstentionHypothesis = buildAbstentionHypothesis(
@@ -560,10 +691,11 @@ public class CorrelationEngine {
                     "INSUFFICIENT_EVIDENCE: Available telemetry does not contain code or configuration changes corresponding to the observed failure (" + errorSummary + "). No candidate commit can be verified as root cause."
             );
             hypotheses.add(0, abstentionHypothesis);
-            // Re-index ranks
-            for (int i = 0; i < hypotheses.size(); i++) {
-                hypotheses.get(i).setRank(i + 1);
-            }
+        }
+
+        // Re-index ranks
+        for (int i = 0; i < hypotheses.size(); i++) {
+            hypotheses.get(i).setRank(i + 1);
         }
 
         return new CorrelationResult(

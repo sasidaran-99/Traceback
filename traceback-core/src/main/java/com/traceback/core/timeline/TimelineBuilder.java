@@ -2,6 +2,7 @@ package com.traceback.core.timeline;
 
 import com.traceback.core.git.ChangedFile;
 import com.traceback.core.git.CommitEvidence;
+import com.traceback.core.git.workingtree.WorkingTreeSnapshot;
 import com.traceback.core.log.LogEntry;
 import com.traceback.core.log.LogEvidence;
 import com.traceback.core.stacktrace.ParsedException;
@@ -35,6 +36,24 @@ public class TimelineBuilder {
                                              LogEvidence logEvidence,
                                              ParsedException parsedStack,
                                              Instant failureOnset) {
+        return buildTimeline(commits, logEvidence, parsedStack, failureOnset, null);
+    }
+
+    /**
+     * Builds the unified chronological timeline including working tree filesystem anomalies.
+     *
+     * @param commits             collected Git commits
+     * @param logEvidence         parsed application log evidence
+     * @param parsedStack         parsed standalone stack trace (if any)
+     * @param failureOnset        timestamp of the first observed failure (or null if none)
+     * @param workingTreeSnapshot forensic working tree snapshot (if available)
+     * @return chronologically sorted timeline events
+     */
+    public List<TimelineEvent> buildTimeline(List<CommitEvidence> commits,
+                                             LogEvidence logEvidence,
+                                             ParsedException parsedStack,
+                                             Instant failureOnset,
+                                             WorkingTreeSnapshot workingTreeSnapshot) {
         List<TimelineEvent> events = new ArrayList<>();
 
         Instant failureBoundary = failureOnset;
@@ -143,6 +162,34 @@ public class TimelineBuilder {
                     root.message(),
                     false,
                     "EVD-STACK-001",
+                    meta
+            ));
+        }
+
+        // 4. Add Working Tree Anomaly event if discrepancies exist
+        if (workingTreeSnapshot != null && workingTreeSnapshot.hasChanges()) {
+            Instant wtTime = workingTreeSnapshot.observedAt();
+            String evidenceId = !workingTreeSnapshot.getMissingFiles().isEmpty()
+                    ? workingTreeSnapshot.getMissingFiles().get(0).evidenceId()
+                    : (workingTreeSnapshot.changes().isEmpty() ? "EVD-WT-001" : workingTreeSnapshot.changes().get(0).evidenceId());
+
+            Map<String, Object> meta = new HashMap<>();
+            meta.put("missingCount", workingTreeSnapshot.missingTrackedCount());
+            meta.put("modifiedCount", workingTreeSnapshot.getModifiedFiles().size());
+            meta.put("untrackedCount", workingTreeSnapshot.getUntrackedFiles().size());
+            meta.put("headCommitSha", workingTreeSnapshot.headCommitSha());
+            meta.put("affectedModules", new ArrayList<>(workingTreeSnapshot.groupByAffectedModule().keySet()));
+
+            events.add(new TimelineEvent(
+                    UUID.randomUUID().toString(),
+                    wtTime,
+                    "WORKING_TREE_ANOMALY",
+                    "WORKING_TREE",
+                    "working-tree-forensics",
+                    "Working tree anomaly: " + workingTreeSnapshot.generateSummary(),
+                    "Detected uncommitted filesystem state: " + workingTreeSnapshot.generateSummary(),
+                    false,
+                    evidenceId,
                     meta
             ));
         }
