@@ -19,6 +19,8 @@ public record InvestigationResponse(
         int commitsAnalyzed,
         int errorsDetected,
         int hypothesesCount,
+        int claimsCount,
+        boolean evidenceSufficient,
         HypothesisResponse topHypothesis,
         Instant startedAt,
         Instant completedAt
@@ -27,7 +29,7 @@ public record InvestigationResponse(
         HypothesisResponse top = null;
         if (!result.hypotheses().isEmpty()) {
             Hypothesis h = result.hypotheses().get(0);
-            top = HypothesisResponse.fromEntity(h, Collections.emptyList());
+            top = HypothesisResponse.fromEntity(h, h.getSupportingEvidenceIds());
         }
 
         return new InvestigationResponse(
@@ -38,6 +40,8 @@ public record InvestigationResponse(
                 result.commitsAnalyzed(),
                 result.errorsDetected(),
                 result.hypotheses().size(),
+                result.claims().size(),
+                result.evidenceSufficient(),
                 top,
                 result.startedAt(),
                 result.completedAt()

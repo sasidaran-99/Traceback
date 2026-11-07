@@ -98,13 +98,20 @@ public class InvestigationController {
         return investigationService.getInvestigation(id)
                 .map(res -> {
                     List<HypothesisResponse> list = res.hypotheses().stream()
-                            .map(h -> {
-                                List<String> evdIds = Collections.emptyList();
-                                return HypothesisResponse.fromEntity(h, evdIds);
-                            })
+                            .map(h -> HypothesisResponse.fromEntity(h, h.getSupportingEvidenceIds()))
                             .toList();
                     return ResponseEntity.ok(list);
                 })
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    /**
+     * Retrieves deterministic claim validation results for an investigation.
+     */
+    @GetMapping("/{id}/claims")
+    public ResponseEntity<List<com.traceback.core.validation.InvestigationClaim>> getClaims(@PathVariable UUID id) {
+        return investigationService.getInvestigation(id)
+                .map(res -> ResponseEntity.ok(res.claims()))
                 .orElse(ResponseEntity.notFound().build());
     }
 }

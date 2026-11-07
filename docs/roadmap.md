@@ -80,28 +80,23 @@ flowchart LR
 
 ---
 
-### Phase 3: Correlation Engine and Root-Cause Investigation
-- **Objective**: Build the deterministic correlation engine, directed evidence graph, and hypothesis scoring algorithm. Validate against Scenarios A, B, and C.
+### Phase 3: Evidence Validation & Transparent Confidence Engine (Completed)
+- **Objective**: Build the deterministic claim validator, transparent confidence engine ($S = T + O + A - C$), honest abstention capability, and ground-truth isolated evaluation harness. Validate across 5 diverse scenarios.
 - **Deliverables**:
-  - `traceback-correlation` engine:
-    - **Explicit Reference Linker**: Connects deployments to commit SHAs and CI build runs.
-    - **Code-to-Stacktrace Matcher**: Computes line, method, and file intersection scores between git diffs and runtime stack traces.
-    - **Config-to-Error Matcher**: Matches configuration key updates against runtime connection exceptions and log tokens.
-    - **Temporal Correlator**: Windows candidate events preceding an incident.
-  - `traceback-investigation` engine:
-    - Candidate hypothesis generator.
-    - Multi-factor scoring engine with proximity penalties and negative evidence discounting.
-    - Concrete developer verification action generator.
-  - Automated Evaluation Test Suite (`traceback-evaluation`):
-    - Automated JUnit 5 runner executing Scenarios A, B, and C from `eval/fixtures/`.
+  - `DeterministicClaimValidator`: Validates claims against registered evidence IDs, rejects foreign/missing items, validates logical support, and enforces contradiction refutation.
+  - `ConfidenceBreakdown`: Computes transparent, auditable breakdown with explicit terms ($T \le 30, O \le 30, A \le 25, C \le 30$). Enforces that temporal proximity alone never establishes causation.
+  - `Hypothesis` Traceability: Exposes supporting evidence IDs, contradicting evidence IDs, matched rules, rule match reasons, penalty reasons, and ranking explanations.
+  - Honest Abstention: Generates `INSUFFICIENT_EVIDENCE` hypothesis when telemetry cannot substantiate causal attribution.
+  - `EvaluationHarness`: Benchmark runner evaluating 5 scenarios (Code regression, DB config, External outage, Misleading commit, Insufficient evidence).
+  - Claims API: `GET /api/investigations/{id}/claims`.
 - **Dependencies**: Phase 2.
-- **Acceptance Criteria**:
-  - Automated evaluation harness passes 100% on Scenarios A, B, and C:
-    - Scenario A: Identifies commit `c1a89b3` as Rank #1.
-    - Scenario B: Identifies config update `cfg-deploy-204` as Rank #1.
-    - Scenario C: Identifies external gateway outage as Rank #1 and rejects innocent commit `f881c2b`.
-  - Achieves Top-1 Accuracy of 100% across the 3 initial test scenarios, decisively beating the MRC baseline.
-  - Query latency for 1,000 window events remains below 800ms.
+- **Acceptance Criteria (Verified)**:
+  - 100% Top-1 Accuracy across causal scenarios.
+  - 100% Top-3 Accuracy across causal scenarios.
+  - 0.0% False-Positive Relationship Rate (FPRR).
+  - 100% Correct Abstention Rate on insufficient scenarios.
+  - Average investigation execution time < 15ms.
+  - All 49 Maven reactor tests pass with zero failures.
 
 ---
 

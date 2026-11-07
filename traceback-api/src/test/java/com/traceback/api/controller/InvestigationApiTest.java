@@ -36,11 +36,16 @@ class InvestigationApiTest {
     @DisplayName("End-to-End API Flow: POST /api/investigations and verify timeline, evidence, hypotheses endpoints")
     void shouldExecuteEndToEndInvestigationWorkflow(@TempDir Path tempRepo) throws Exception {
         // 1. Create a minimal valid Git repository
+        java.util.TimeZone utc = java.util.TimeZone.getTimeZone("UTC");
+        org.eclipse.jgit.lib.PersonIdent aliceIdent = new org.eclipse.jgit.lib.PersonIdent("Alice", "alice@example.com",
+                java.util.Date.from(java.time.Instant.parse("2026-10-10T14:10:00Z")), utc);
+
         try (Git git = Git.init().setDirectory(tempRepo.toFile()).call()) {
             Path file = tempRepo.resolve("application.properties");
             Files.writeString(file, "spring.datasource.hikari.connection-timeout=3000\n");
             git.add().addFilepattern("application.properties").call();
-            git.commit().setMessage("Reduce timeout to 3s").setAuthor("Alice", "alice@example.com").call();
+            git.commit().setMessage("Reduce timeout to 3s")
+                    .setAuthor(aliceIdent).setCommitter(aliceIdent).call();
         }
 
         String logContent = """
@@ -98,7 +103,16 @@ class InvestigationApiTest {
         mockMvc.perform(get(location + "/hypotheses"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$").isArray())
-                .andExpect(jsonPath("$[0].rank").value(1));
+                .andExpect(jsonPath("$[0].rank").value(1))
+                .andExpect(jsonPath("$[0].confidenceBreakdown").exists())
+                .andExpect(jsonPath("$[0].evidenceIds").isArray());
+
+        // GET /api/investigations/{id}/claims -> 200 OK
+        mockMvc.perform(get(location + "/claims"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$").isArray())
+                .andExpect(jsonPath("$[0].claimId").isNotEmpty())
+                .andExpect(jsonPath("$[0].status").value("SUPPORTED"));
     }
 
     @Test

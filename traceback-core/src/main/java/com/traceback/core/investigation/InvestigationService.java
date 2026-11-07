@@ -176,7 +176,7 @@ public class InvestigationService {
                 env,
                 startTime,
                 Instant.now(),
-                "COMPLETED",
+                correlationResult.evidenceSufficient() ? "COMPLETED" : "INSUFFICIENT_EVIDENCE",
                 commits.size(),
                 totalErrors,
                 primaryException,
@@ -185,11 +185,15 @@ public class InvestigationService {
                 correlationResult.relationships(),
                 correlationResult.rankedHypotheses(),
                 correlationResult.supportingEvidenceByCommitSha(),
-                correlationResult.counterEvidenceByCommitSha()
+                correlationResult.counterEvidenceByCommitSha(),
+                correlationResult.confidenceBreakdownsByCommitSha(),
+                correlationResult.claims(),
+                correlationResult.evidenceSufficient()
         );
 
         investigationStore.put(investigationId, result);
-        log.info("Investigation {} completed. Hypotheses generated: {}", investigationId, result.hypotheses().size());
+        log.info("Investigation {} completed. Hypotheses: {}, Claims: {}, EvidenceSufficient: {}",
+                investigationId, result.hypotheses().size(), result.claims().size(), result.evidenceSufficient());
 
         return result;
     }
@@ -208,5 +212,9 @@ public class InvestigationService {
 
     public List<com.traceback.core.domain.Hypothesis> getHypotheses(UUID id) {
         return getInvestigation(id).map(InvestigationResult::hypotheses).orElse(Collections.emptyList());
+    }
+
+    public List<com.traceback.core.validation.InvestigationClaim> getClaims(UUID id) {
+        return getInvestigation(id).map(InvestigationResult::claims).orElse(Collections.emptyList());
     }
 }

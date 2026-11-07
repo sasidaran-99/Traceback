@@ -440,3 +440,63 @@ To maintain focus, execution velocity, and high reliability, several technologie
 |                    |                       | decisions; in Phase 5, an LLM may generate summaries.   |
 +--------------------+-----------------------+---------------------------------------------------------+
 ```
+
+---
+
+## 10. The Four-Tier Epistemological Framework
+
+To ensure that failure investigations are auditable, verifiable, and protected against cognitive traps, Traceback enforces a strict four-tier epistemological hierarchy:
+
+```text
++----------------------------------------------------------------------------------------------------+
+|                         TRACEBACK 4-TIER EPISTEMOLOGICAL FRAMEWORK                                 |
++-----------------------+-----------------------------+----------------------------------------------+
+| Layer                 | Mechanism                   | Meaning & Limitations                        |
++-----------------------+-----------------------------+----------------------------------------------+
+| 1. Evidence Integrity | SHA-256 Cryptographic Hash  | Bit-level payload immutability.              |
+|                       |                             | DOES NOT prove relevance or causation.       |
++-----------------------+-----------------------------+----------------------------------------------+
+| 2. Claim Validation   | Deterministic Rules &       | Logical consistency between assertions and   |
+|                       | Evidence Registry Lookup    | telemetry; rejects foreign/missing items.    |
++-----------------------+-----------------------------+----------------------------------------------+
+| 3. Heuristic          | S = T + O + A - C           | Multi-factor decision support score.         |
+|    Confidence         | (Normalized 0.0 to 1.0)     | NOT a calibrated Bayesian probability.       |
++-----------------------+-----------------------------+----------------------------------------------+
+| 4. Statistically      | Ground-Truth Evaluation     | Empirical accuracy over benchmark incidents  |
+|    Measured Accuracy  | Harness (Acc@1, Acc@3, FPRR)| (Acc@1: 100%, Acc@3: 100%, FPRR: 0.0%).      |
++-----------------------+-----------------------------+----------------------------------------------+
+```
+
+### 10.1 Tier 1: Evidence Integrity (Cryptographic Verification)
+Every evidence item recorded in `ConcreteEvidenceRegistry` receives a deterministic SHA-256 hash computed over its canonical fields:
+$$\text{Hash} = \text{SHA-256}(\text{evidenceId} \parallel \text{source} \parallel \text{originalReference} \parallel \text{summary})$$
+- **What it guarantees**: The evidence payload has not been tampered with or corrupted since registration.
+- **Critical boundary**: A valid cryptographic checksum only proves that the data is authentic; it **does not** prove that the data supports a causal claim or that it is relevant to the failure.
+
+### 10.2 Tier 2: Claim Validation (Logical Substantiation)
+Claims made during an investigation (`InvestigationClaim`) must be deterministically evaluated by `ClaimValidator`:
+- **Mandatory References**: Rejects any claim with missing or blank evidence IDs (`UNSUPPORTED`).
+- **Registry Existence**: Rejects any claim citing evidence IDs not present in the active investigation registry (`UNSUPPORTED`).
+- **Multi-Tenant / Investigation Boundary**: Rejects claims citing evidence belonging to a different investigation (`UNSUPPORTED`).
+- **Support Validation**: Rejects claims whose cited evidence does not logically substantiate the assertion (e.g. asserting a code regression without code diff or stack frame evidence).
+- **Direct Refutation**: If valid contradictory evidence refutes the claim (subsystem contradiction, cosmetic-only change, or post-failure commit), the claim is marked `CONTRADICTED` or `PARTIALLY_SUPPORTED`.
+- **Honest Abstention**: When evidence is missing or insufficient, Traceback abstains (`INSUFFICIENT_EVIDENCE`) instead of fabricating conclusions.
+
+### 10.3 Tier 3: Heuristic Confidence (Transparent Score Breakdown)
+Candidate hypotheses are scored via the transparent formula:
+$$S = T + O + A - C$$
+- **Temporal Proximity ($T \in [0, 30]$)**: Rewards changes occurring within the pre-incident window ($t \le 15\text{m}: +30\text{ pts}$, $15\text{m} < t \le 60\text{m}: +20\text{ pts}$).
+- **File / Configuration Overlap ($O \in [0, 30]$)**: Rewards exact stack frame file/line intersections (+30 pts) and configuration key deltas matching error symptoms (+30 pts).
+- **Independent Agreement ($A \in [0, 25]$)**: Rewards multiple distinct sources corroborating the finding (commit message keywords: +10 pts; repeated error burst in logs: +15 pts).
+- **Contradiction Penalty ($C \in [0, 30]$)**: Penalizes post-failure commits (-30 pts), subsystem contradictions (-30 pts), cosmetic-only changes (-25 pts), and superseded configuration keys (-25 pts).
+- **Normalization**:
+  $$\text{NormalizedScore} = \frac{\max(0, S)}{85.0}$$
+- **Constraint**: Temporal proximity alone must **never** establish causation. If $O = 0$, confidence is strictly capped at $\le 0.15$ with status `REJECTED`.
+- **Epistemological Caveat**: These weights are heuristic decision-support parameters, **not statistically calibrated probabilities**.
+
+### 10.4 Tier 4: Statistically Measured Accuracy (Evaluation Harness)
+Statistical accuracy is measured empirically by the automated `EvaluationHarness` across reproducible ground-truth incident scenarios:
+- **Top-1 Accuracy ($\text{Acc@1}$)**: Percentage of causal scenarios where the true root cause is ranked #1.
+- **Top-3 Accuracy ($\text{Acc@3}$)**: Percentage of causal scenarios where the true root cause is within the top 3 hypotheses.
+- **False-Positive Relationship Rate ($\text{FPRR}$)**: Proportion of reported edges linking innocent commits to errors.
+- **Correct Abstention Rate**: Percentage of insufficient-evidence or innocent-commit scenarios where the engine correctly abstains from false blame.

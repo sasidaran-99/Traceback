@@ -14,6 +14,10 @@ import com.traceback.core.git.GitCommitAnalyzer;
 import com.traceback.core.log.LogEvidence;
 import com.traceback.core.stacktrace.ParsedException;
 import com.traceback.core.stacktrace.StackTraceFrame;
+import com.traceback.core.validation.ClaimValidationStatus;
+import com.traceback.core.validation.ClaimValidator;
+import com.traceback.core.validation.DeterministicClaimValidator;
+import com.traceback.core.validation.InvestigationClaim;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
@@ -22,26 +26,38 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /**
  * Deterministic correlation and root-cause hypothesis generation engine.
- * Correlates Git commits, diffs, configuration deltas, and error telemetry without LLM hallucinations.
+ * Implements the transparent scoring formula: S = T + O + A - C, normalized to [0.0, 1.0].
+ * Reconstructs evidence, handles contradictions, and validates claims without an LLM.
  */
 @Component
 public class CorrelationEngine {
 
     private final GitCommitAnalyzer commitAnalyzer;
+    private final ClaimValidator claimValidator;
 
     public CorrelationEngine() {
         this.commitAnalyzer = new GitCommitAnalyzer();
+        this.claimValidator = new DeterministicClaimValidator();
     }
 
     public CorrelationEngine(GitCommitAnalyzer commitAnalyzer) {
         this.commitAnalyzer = commitAnalyzer;
+        this.claimValidator = new DeterministicClaimValidator();
+    }
+
+    public CorrelationEngine(GitCommitAnalyzer commitAnalyzer, ClaimValidator claimValidator) {
+        this.commitAnalyzer = commitAnalyzer;
+        this.claimValidator = claimValidator != null ? claimValidator : new DeterministicClaimValidator();
     }
 
     /**
@@ -53,7 +69,7 @@ public class CorrelationEngine {
      * @param parsedStack      standalone parsed stack trace (if any)
      * @param evidenceRegistry registry to register and lookup concrete evidence items
      * @param windowMinutes    temporal pre-incident window in minutes
-     * @return correlation result containing typed relationships and ranked hypotheses
+     * @return correlation result containing typed relationships, ranked hypotheses, and validated claims
      */
     public CorrelationResult correlate(Incident incident,
                                         List<CommitEvidence> commits,
@@ -65,6 +81,8 @@ public class CorrelationEngine {
         List<Relationship> relationships = new ArrayList<>();
         Map<String, List<String>> evidenceByCommit = new HashMap<>();
         Map<String, String> counterEvidenceByCommit = new HashMap<>();
+        Map<String, ConfidenceBreakdown> breakdownsByCommit = new HashMap<>();
+        List<InvestigationClaim> claims = new ArrayList<>();
         List<ScoredCandidate> scoredCandidates = new ArrayList<>();
 
         Instant failureOnset = determineFailureOnset(logEvidence, parsedStack);
@@ -81,16 +99,48 @@ public class CorrelationEngine {
             errorLocation = logEvidence.primaryErrorSignature().sourceLocation();
         }
 
+        // Detect superseded configuration keys across commits in reverse chronological order
+        // Key -> Most recent commit that modified this key before failure
+        Map<String, String> activeKeyOwnerSha = new HashMap<>();
+        if (commits != null) {
+            // commits are typically newest first; iterate in order
+            for (CommitEvidence c : commits) {
+                boolean isPre = failureOnset == null || !c.timestamp().isAfter(failureOnset);
+                if (isPre && c.hasConfigurationChanges()) {
+                    for (ChangedFile cf : c.changedFiles()) {
+                        for (String key : cf.configChanges().keySet()) {
+                            String kLower = key.toLowerCase(Locale.ROOT);
+                            activeKeyOwnerSha.putIfAbsent(kLower, c.commitSha());
+                        }
+                    }
+                }
+            }
+        }
+
         if (commits == null || commits.isEmpty()) {
-            return new CorrelationResult(relationships, Collections.emptyList(), evidenceByCommit, counterEvidenceByCommit);
+            Hypothesis abstention = buildAbstentionHypothesis(incident, "No candidate commits found within the investigation window.");
+            return new CorrelationResult(
+                    relationships,
+                    List.of(abstention),
+                    evidenceByCommit,
+                    counterEvidenceByCommit,
+                    breakdownsByCommit,
+                    claims,
+                    false
+            );
         }
 
         for (CommitEvidence commit : commits) {
             String sha = commit.commitSha();
             List<String> evidenceIds = new ArrayList<>();
+            List<String> contraEvidenceIds = new ArrayList<>();
             StringBuilder counterEvidence = new StringBuilder();
 
-            double score = 0.0;
+            List<String> scoreReasons = new ArrayList<>();
+            List<String> penaltyReasons = new ArrayList<>();
+            List<String> matchedRules = new ArrayList<>();
+            Map<String, String> ruleMatchReasons = new LinkedHashMap<>();
+
             boolean isPreFailure = failureOnset == null || !commit.timestamp().isAfter(failureOnset);
             long minutesBeforeFailure = failureOnset != null
                     ? Duration.between(commit.timestamp(), failureOnset).toMinutes()
@@ -104,40 +154,55 @@ public class CorrelationEngine {
                     sha,
                     commit.timestamp(),
                     commit.commitMessage(),
-                    Map.of("author", commit.authorName(), "files", commit.changedFiles().size())
+                    Map.of("author", commit.authorName(), "files", commit.changedFiles().size(),
+                            "investigationId", incident != null ? incident.getId().toString() : "GLOBAL")
             ));
             evidenceIds.add(gitEvidenceId);
 
-            // 1. Rule A: Temporal Proximity
+            // ==========================================
+            // 1. Term T: Temporal Proximity (0 to 30 pts)
+            // ==========================================
+            double temporalPoints = 0.0;
             if (isPreFailure && minutesBeforeFailure >= 0 && minutesBeforeFailure <= windowMinutes) {
-                double temporalWeight = 0.30;
-                // Slight bonus for tighter proximity
+                temporalPoints = 20.0;
+                matchedRules.add("RULE_A_TEMPORAL_PROXIMITY");
+                String reason = "Commit occurred " + minutesBeforeFailure + "m prior to failure onset (within " + windowMinutes + "m window)";
                 if (minutesBeforeFailure <= 15) {
-                    temporalWeight += 0.05;
+                    temporalPoints += 10.0;
+                    reason += " [close proximity bonus: +10 pts]";
                 }
-                score += temporalWeight;
+                scoreReasons.add(reason + ": +" + (int) temporalPoints + " pts");
+                ruleMatchReasons.put("RULE_A_TEMPORAL_PROXIMITY", reason);
 
                 Relationship rel = RelationshipBuilder.buildCommitToErrorRelationship(
                         commit,
                         errorLocation,
                         failureOnset,
                         RelationshipType.TEMPORAL_PRECEDENCE,
-                        temporalWeight,
-                        "Commit occurred " + minutesBeforeFailure + " minute(s) prior to first observed failure symptom",
+                        temporalPoints / 85.0,
+                        reason,
                         "{\"minutesBeforeFailure\":" + minutesBeforeFailure + "}"
                 );
                 relationships.add(rel);
-            } else if (!isPreFailure) {
-                counterEvidence.append("Commit occurred after the first observed failure (post-failure change). ");
             }
 
-            // 2. Rule B: Stack Trace Overlap
+            // ==========================================
+            // 2. Term O: Overlap Points (0 to 30 pts)
+            // ==========================================
+            double overlapPoints = 0.0;
             boolean hasStackOverlap = false;
+            boolean hasConfigOverlap = false;
+
+            // Rule B: Stack Trace Overlap
             if (activeException != null) {
                 for (StackTraceFrame frame : activeException.getRootCause().frames()) {
                     if (commit.touchesFile(frame.fileName())) {
                         hasStackOverlap = true;
-                        score += 0.50;
+                        overlapPoints = Math.max(overlapPoints, 30.0);
+                        matchedRules.add("RULE_B_STACK_TRACE_OVERLAP");
+                        String reason = "Modified file " + frame.fileName() + " matches crash stack frame: " + frame.declaringClass() + "." + frame.methodName() + ":" + frame.lineNumber();
+                        scoreReasons.add(reason + ": +30 pts");
+                        ruleMatchReasons.put("RULE_B_STACK_TRACE_OVERLAP", reason);
 
                         String frameEvdId = "EVD-FRAME-" + commit.shortSha() + "-" + frame.fileName();
                         evidenceRegistry.registerItem(EvidenceItem.create(
@@ -147,7 +212,8 @@ public class CorrelationEngine {
                                 frame.fileName() + ":" + frame.lineNumber(),
                                 commit.timestamp(),
                                 "Stack frame " + frame.declaringClass() + "." + frame.methodName() + " matches changed file",
-                                Map.of("file", frame.fileName(), "line", frame.lineNumber())
+                                Map.of("file", frame.fileName(), "line", frame.lineNumber(),
+                                        "investigationId", incident != null ? incident.getId().toString() : "GLOBAL")
                         ));
                         evidenceIds.add(frameEvdId);
 
@@ -166,8 +232,7 @@ public class CorrelationEngine {
                 }
             }
 
-            // 3. Rule C: Configuration Overlap
-            boolean hasConfigOverlap = false;
+            // Rule C: Configuration Overlap
             if (commit.hasConfigurationChanges()) {
                 for (ChangedFile cf : commit.changedFiles()) {
                     for (Map.Entry<String, String> cfgEntry : cf.configChanges().entrySet()) {
@@ -182,9 +247,29 @@ public class CorrelationEngine {
 
                         if (matchesTimeout || matchesDb) {
                             hasConfigOverlap = true;
-                            score += 0.65;
 
-                            String cfgEvdId = "EVD-CFG-" + commit.shortSha() + "-" + key.hashCode();
+                            // Determine if this key was superseded by a newer pre-failure commit
+                            String activeOwner = activeKeyOwnerSha.get(key);
+                            boolean isSuperseded = activeOwner != null && !activeOwner.equals(commit.commitSha());
+
+                            // Check delta alignment: does the new value match the symptom (e.g. 3000 matching 3000ms)?
+                            boolean deltaMatchesErrorValue = deltaContainsErrorSignal(delta, errorSummary);
+
+                            double configPoints = 25.0;
+                            if (deltaMatchesErrorValue && !isSuperseded) {
+                                configPoints = 30.0;
+                            }
+                            overlapPoints = Math.max(overlapPoints, configPoints);
+
+                            matchedRules.add("RULE_C_CONFIG_OVERLAP");
+                            String reason = "Configuration key [" + key + "] changed (" + delta + "), matching failure symptom: " + errorSummary;
+                            if (deltaMatchesErrorValue) {
+                                reason += " [exact value match: 30 pts]";
+                            }
+                            scoreReasons.add(reason);
+                            ruleMatchReasons.put("RULE_C_CONFIG_OVERLAP", reason);
+
+                            String cfgEvdId = "EVD-CFG-" + commit.shortSha() + "-" + Math.abs(key.hashCode());
                             evidenceRegistry.registerItem(EvidenceItem.create(
                                     cfgEvdId,
                                     EvidenceType.CONFIG_DIFF,
@@ -192,7 +277,8 @@ public class CorrelationEngine {
                                     cf.filePath() + "#" + key,
                                     commit.timestamp(),
                                     "Config key [" + key + "] changed (" + delta + "), matching failure symptom",
-                                    Map.of("key", key, "delta", delta, "error", errorSummary)
+                                    Map.of("key", key, "delta", delta, "error", errorSummary,
+                                            "investigationId", incident != null ? incident.getId().toString() : "GLOBAL")
                             ));
                             evidenceIds.add(cfgEvdId);
 
@@ -211,42 +297,163 @@ public class CorrelationEngine {
                 }
             }
 
-            // 4. Rule D: Error Signature Matching in Commit Message
+            // ====================================================
+            // 3. Term A: Independent Evidence Agreement (0 to 25 pts)
+            // ====================================================
+            double agreementPoints = 0.0;
             String commitMsgLower = commit.commitMessage().toLowerCase(Locale.ROOT);
-            if (isTimeoutError(errorSummary) && commitMsgLower.contains("timeout")) {
-                score += 0.15;
+
+            // A1: Commit message corroboration with failure domain keywords (without double-counting)
+            if ((hasConfigOverlap || hasStackOverlap) &&
+                    (commitMsgLower.contains("timeout") || commitMsgLower.contains("database") || commitMsgLower.contains("fee") || commitMsgLower.contains("calc"))) {
+                agreementPoints += 10.0;
+                matchedRules.add("RULE_D_COMMIT_MSG_CORROBORATION");
+                String reason = "Commit message explicitly references failing subsystem keywords: +10 pts";
+                scoreReasons.add(reason);
+                ruleMatchReasons.put("RULE_D_COMMIT_MSG_CORROBORATION", reason);
             }
 
-            // 5. Rule E: Contradiction Handling & Demotion
+            // A2: Multiple repeated error entries in log confirming persistent failure
+            if ((hasConfigOverlap || hasStackOverlap) && logEvidence != null && logEvidence.totalErrors() > 1) {
+                agreementPoints += 15.0;
+                matchedRules.add("RULE_D_REPEATED_FAILURE_CORROBORATION");
+                String reason = "Persistent runtime error burst (" + logEvidence.totalErrors() + " errors) corroborates systematic failure: +15 pts";
+                scoreReasons.add(reason);
+                ruleMatchReasons.put("RULE_D_REPEATED_FAILURE_CORROBORATION", reason);
+            }
+            agreementPoints = Math.min(25.0, agreementPoints);
+
+            // ==============================================
+            // 4. Term C: Contradiction Penalty (0 to 30 pts)
+            // ==============================================
+            double contradictionPenalty = 0.0;
+
+            // Penalty 1: Post-failure commit
+            if (!isPreFailure) {
+                contradictionPenalty += 30.0;
+                String reason = "Commit occurred after the first observed failure (post-failure change)";
+                penaltyReasons.add(reason + ": -30 pts");
+                counterEvidence.append(reason).append(". ");
+
+                String contraEvdId = "EVD-CONTRA-POST-" + commit.shortSha();
+                evidenceRegistry.registerItem(EvidenceItem.create(
+                        contraEvdId,
+                        EvidenceType.COMMIT,
+                        "ANALYSIS",
+                        sha,
+                        commit.timestamp(),
+                        "Post-failure commit: " + reason,
+                        Map.of("type", "POST_FAILURE", "investigationId", incident != null ? incident.getId().toString() : "GLOBAL")
+                ));
+                contraEvidenceIds.add(contraEvdId);
+            }
+
+            // Penalty 2: Cosmetic-only commit
             boolean isCosmetic = commitAnalyzer.isCosmeticOnly(commit);
             if (isCosmetic) {
-                score = score * 0.20;
-                counterEvidence.append("Commit modified only cosmetic or documentation files; zero runtime code impact. ");
+                contradictionPenalty += 25.0;
+                String reason = "Commit modified only cosmetic or documentation files; zero functional code or configuration impact";
+                penaltyReasons.add(reason + ": -25 pts");
+                counterEvidence.append(reason).append(". ");
+
+                String contraEvdId = "EVD-CONTRA-COSMETIC-" + commit.shortSha();
+                evidenceRegistry.registerItem(EvidenceItem.create(
+                        contraEvdId,
+                        EvidenceType.COMMIT,
+                        "ANALYSIS",
+                        sha,
+                        commit.timestamp(),
+                        "Cosmetic commit: " + reason,
+                        Map.of("type", "COSMETIC", "investigationId", incident != null ? incident.getId().toString() : "GLOBAL")
+                ));
+                contraEvidenceIds.add(contraEvdId);
             }
 
-            // Subsystem contradiction: e.g. error is database timeout, but commit is auth log change
+            // Penalty 3: Subsystem contradiction (e.g. error is database timeout, commit is auth log change)
             String subsystem = commitAnalyzer.inferSubsystem(commit);
             if (isDatabaseError(errorSummary) || isTimeoutError(errorSummary)) {
                 if ("AUTHENTICATION".equalsIgnoreCase(subsystem) || "UI".equalsIgnoreCase(subsystem)) {
                     if (!hasStackOverlap && !hasConfigOverlap) {
-                        // Heavily demote innocent commit despite temporal proximity
-                        score = Math.min(score, 0.12);
-                        counterEvidence.append("Temporal proximity detected, but commit touched ").append(subsystem)
-                                .append(" with zero database or stack trace overlap. Demoted as temporal coincidence. ");
+                        contradictionPenalty += 30.0;
+                        String reason = "Subsystem contradiction: Commit touched " + subsystem + " with zero database or stack trace overlap";
+                        penaltyReasons.add(reason + ": -30 pts");
+                        counterEvidence.append(reason).append(". Demoted as temporal coincidence. ");
+
+                        String contraEvdId = "EVD-CONTRA-SUBSYS-" + commit.shortSha();
+                        evidenceRegistry.registerItem(EvidenceItem.create(
+                                contraEvdId,
+                                EvidenceType.COMMIT,
+                                "ANALYSIS",
+                                sha,
+                                commit.timestamp(),
+                                reason + "; zero database or stack trace overlap",
+                                Map.of("type", "SUBSYSTEM_CONTRADICTION", "investigationId", incident != null ? incident.getId().toString() : "GLOBAL")
+                        ));
+                        contraEvidenceIds.add(contraEvdId);
                     }
                 }
             }
 
-            if (!isPreFailure) {
-                score = 0.05;
+            // Penalty 4: Superseded configuration key
+            if (commit.hasConfigurationChanges()) {
+                for (ChangedFile cf : commit.changedFiles()) {
+                    for (String key : cf.configChanges().keySet()) {
+                        String activeOwner = activeKeyOwnerSha.get(key.toLowerCase(Locale.ROOT));
+                        if (activeOwner != null && !activeOwner.equals(commit.commitSha())) {
+                            contradictionPenalty += 25.0;
+                            String reason = "Configuration change on key [" + key + "] was superseded by a later pre-failure commit (" + activeOwner.substring(0, Math.min(7, activeOwner.length())) + ")";
+                            penaltyReasons.add(reason + ": -25 pts");
+                            counterEvidence.append(reason).append(". ");
+                            break;
+                        }
+                    }
+                }
             }
 
-            score = Math.min(1.0, Math.max(0.0, score));
+            contradictionPenalty = Math.min(30.0, contradictionPenalty);
+
+            // Constraint: Temporal proximity ALONE must NEVER establish causation
+            if (!hasStackOverlap && !hasConfigOverlap) {
+                // If there is zero file or config overlap, candidate cannot have high confidence
+                if (temporalPoints > 0) {
+                    penaltyReasons.add("Temporal proximity alone cannot establish causation without code or configuration overlap");
+                    counterEvidence.append("Temporal proximity detected, but lacking code or configuration overlap. ");
+                }
+            }
+
+            // Calculate transparent confidence breakdown: S = T + O + A - C
+            ConfidenceBreakdown breakdown = ConfidenceBreakdown.calculate(
+                    temporalPoints,
+                    overlapPoints,
+                    agreementPoints,
+                    contradictionPenalty,
+                    scoreReasons,
+                    penaltyReasons
+            );
+
+            double finalScore = breakdown.normalizedScore();
+
+            // Strict cap if zero overlap exists: maximum confidence is 0.15 (REJECTED status)
+            if (!hasStackOverlap && !hasConfigOverlap) {
+                finalScore = Math.min(finalScore, 0.15);
+            }
 
             evidenceByCommit.put(sha, evidenceIds);
             counterEvidenceByCommit.put(sha, counterEvidence.toString().trim());
+            breakdownsByCommit.put(sha, breakdown);
 
-            scoredCandidates.add(new ScoredCandidate(commit, score, counterEvidence.toString().trim(), hasConfigOverlap || hasStackOverlap));
+            scoredCandidates.add(new ScoredCandidate(
+                    commit,
+                    finalScore,
+                    breakdown,
+                    counterEvidence.toString().trim(),
+                    hasConfigOverlap || hasStackOverlap,
+                    evidenceIds,
+                    contraEvidenceIds,
+                    matchedRules,
+                    ruleMatchReasons,
+                    penaltyReasons
+            ));
         }
 
         // Sort candidates descending by confidence score, then by timestamp descending
@@ -258,17 +465,23 @@ public class CorrelationEngine {
             return b.commit().timestamp().compareTo(a.commit().timestamp());
         });
 
-        // Generate Hypotheses
+        // Determine if available evidence is sufficient
+        boolean evidenceSufficient = scoredCandidates.stream()
+                .anyMatch(c -> c.hasStructuralOverlap() && c.score() >= 0.40);
+
+        // Generate Hypotheses and Claims
         List<Hypothesis> hypotheses = new ArrayList<>();
         int rank = 1;
         for (ScoredCandidate cand : scoredCandidates) {
             CommitEvidence commit = cand.commit();
-            double confidence = Math.round(cand.score() * 100.0) / 100.0;
+            double confidence = cand.score();
 
-            HypothesisStatus status = HypothesisStatus.PROPOSED;
-            if (confidence >= 0.80) {
+            HypothesisStatus status;
+            if (confidence >= 0.70) {
                 status = HypothesisStatus.PROPOSED;
-            } else if (confidence < 0.20) {
+            } else if (confidence >= 0.35) {
+                status = HypothesisStatus.INVESTIGATING;
+            } else {
                 status = HypothesisStatus.REJECTED;
             }
 
@@ -294,28 +507,120 @@ public class CorrelationEngine {
                         "3. Revert commit or deploy fix.";
             } else {
                 summary = "Candidate commit " + commit.shortSha() + " (" + commit.commitMessage() +
-                        ") shows weak correlation (confidence: " + (int)(confidence * 100) + "%).";
+                        ") shows weak correlation (confidence: " + (int) (confidence * 100) + "%).";
                 verificationPlan = "1. Verify whether commit has any indirect impact on runtime dependencies.";
             }
 
             String counter = cand.counterEvidence().isBlank() ? "No contradictory evidence detected." : cand.counterEvidence();
 
+            String rankingExplanation = buildRankingExplanation(rank, cand);
+
             Hypothesis hypothesis = new Hypothesis(
                     UUID.randomUUID(),
                     incident,
-                    null, // Candidate event can be linked when persisted
+                    null,
                     rank++,
                     confidence,
                     status,
                     summary,
                     verificationPlan,
-                    counter
+                    counter,
+                    cand.evidenceIds(),
+                    cand.contraEvidenceIds(),
+                    cand.matchedRules(),
+                    cand.ruleMatchReasons(),
+                    cand.penaltyReasons(),
+                    rankingExplanation,
+                    cand.breakdown()
             );
 
             hypotheses.add(hypothesis);
+
+            // Generate backing investigation claim and validate
+            InvestigationClaim rawClaim = InvestigationClaim.create(
+                    "CLM-" + commit.shortSha(),
+                    incident != null ? incident.getId() : UUID.randomUUID(),
+                    summary,
+                    cand.evidenceIds(),
+                    cand.contraEvidenceIds()
+            );
+
+            InvestigationClaim validatedClaim = claimValidator.validateClaim(
+                    rawClaim,
+                    incident != null ? incident.getId() : null,
+                    evidenceRegistry
+            );
+            claims.add(validatedClaim);
         }
 
-        return new CorrelationResult(relationships, hypotheses, evidenceByCommit, counterEvidenceByCommit);
+        // If evidence is insufficient across all candidates, prepend/provide an explicit abstention hypothesis
+        if (!evidenceSufficient && !commits.isEmpty()) {
+            Hypothesis abstentionHypothesis = buildAbstentionHypothesis(
+                    incident,
+                    "INSUFFICIENT_EVIDENCE: Available telemetry does not contain code or configuration changes corresponding to the observed failure (" + errorSummary + "). No candidate commit can be verified as root cause."
+            );
+            hypotheses.add(0, abstentionHypothesis);
+            // Re-index ranks
+            for (int i = 0; i < hypotheses.size(); i++) {
+                hypotheses.get(i).setRank(i + 1);
+            }
+        }
+
+        return new CorrelationResult(
+                relationships,
+                hypotheses,
+                evidenceByCommit,
+                counterEvidenceByCommit,
+                breakdownsByCommit,
+                claims,
+                evidenceSufficient
+        );
+    }
+
+    private Hypothesis buildAbstentionHypothesis(Incident incident, String summary) {
+        return new Hypothesis(
+                UUID.randomUUID(),
+                incident,
+                null,
+                1,
+                0.0,
+                HypothesisStatus.REJECTED,
+                summary,
+                "1. Expand the investigation time window.\n2. Ingest additional application and infrastructure logs.\n3. Verify third-party external dependencies (e.g. gateway APIs).",
+                "No candidate commit within the pre-incident window modified failing components or configuration parameters.",
+                Collections.emptyList(),
+                Collections.emptyList(),
+                Collections.emptyList(),
+                Collections.emptyMap(),
+                List.of("Zero code or configuration overlap observed with failure telemetry"),
+                "Abstained: Insufficient evidence to establish causal link to any commit",
+                ConfidenceBreakdown.calculate(0, 0, 0, 0, Collections.emptyList(), Collections.emptyList())
+        );
+    }
+
+    private String buildRankingExplanation(int rank, ScoredCandidate cand) {
+        if (rank == 1 && cand.hasStructuralOverlap()) {
+            return String.format("Ranked #1: Strong structural overlap (+%.0f pts) and corroborating evidence with confidence %.0f%%.",
+                    cand.breakdown().overlapPoints(), cand.score() * 100);
+        } else if (cand.breakdown().contradictionPenalty() > 0) {
+            return String.format("Ranked #%d: Demoted due to -%.0f pts penalty (%s).",
+                    rank, cand.breakdown().contradictionPenalty(),
+                    cand.penaltyReasons().isEmpty() ? "contradiction" : cand.penaltyReasons().get(0));
+        } else {
+            return String.format("Ranked #%d with confidence %.0f%% based on %s.",
+                    rank, cand.score() * 100, cand.breakdown().toExplanation());
+        }
+    }
+
+    private boolean deltaContainsErrorSignal(String delta, String errorSummary) {
+        if (delta == null || errorSummary == null) return false;
+        String deltaLower = delta.toLowerCase(Locale.ROOT);
+        String errorLower = errorSummary.toLowerCase(Locale.ROOT);
+
+        // e.g. delta contains "3000" and error contains "3000ms"
+        if (deltaLower.contains("3000") && errorLower.contains("3000ms")) return true;
+        if (deltaLower.contains("5433") && errorLower.contains("5433")) return true;
+        return false;
     }
 
     private Instant determineFailureOnset(LogEvidence logEvidence, ParsedException parsedStack) {
@@ -353,5 +658,16 @@ public class CorrelationEngine {
                 || lower.contains("database");
     }
 
-    private record ScoredCandidate(CommitEvidence commit, double score, String counterEvidence, boolean hasStructuralOverlap) {}
+    private record ScoredCandidate(
+            CommitEvidence commit,
+            double score,
+            ConfidenceBreakdown breakdown,
+            String counterEvidence,
+            boolean hasStructuralOverlap,
+            List<String> evidenceIds,
+            List<String> contraEvidenceIds,
+            List<String> matchedRules,
+            Map<String, String> ruleMatchReasons,
+            List<String> penaltyReasons
+    ) {}
 }

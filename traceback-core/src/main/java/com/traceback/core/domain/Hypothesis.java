@@ -54,6 +54,27 @@ public class Hypothesis {
     @Column(name = "counter_evidence", columnDefinition = "text")
     private String counterEvidence;
 
+    @jakarta.persistence.Transient
+    private java.util.List<String> supportingEvidenceIds = new java.util.ArrayList<>();
+
+    @jakarta.persistence.Transient
+    private java.util.List<String> contradictingEvidenceIds = new java.util.ArrayList<>();
+
+    @jakarta.persistence.Transient
+    private java.util.List<String> matchedRules = new java.util.ArrayList<>();
+
+    @jakarta.persistence.Transient
+    private java.util.Map<String, String> ruleMatchReasons = new java.util.LinkedHashMap<>();
+
+    @jakarta.persistence.Transient
+    private java.util.List<String> penaltyReasons = new java.util.ArrayList<>();
+
+    @jakarta.persistence.Transient
+    private String rankingExplanation;
+
+    @jakarta.persistence.Transient
+    private com.traceback.core.correlation.ConfidenceBreakdown confidenceBreakdown;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
@@ -75,6 +96,26 @@ public class Hypothesis {
         this.summary = summary;
         this.verificationPlan = verificationPlan;
         this.counterEvidence = counterEvidence;
+    }
+
+    public Hypothesis(UUID id, Incident incident, Event candidateRootCause, int rank,
+                      double confidenceScore, HypothesisStatus status, String summary,
+                      String verificationPlan, String counterEvidence,
+                      java.util.List<String> supportingEvidenceIds,
+                      java.util.List<String> contradictingEvidenceIds,
+                      java.util.List<String> matchedRules,
+                      java.util.Map<String, String> ruleMatchReasons,
+                      java.util.List<String> penaltyReasons,
+                      String rankingExplanation,
+                      com.traceback.core.correlation.ConfidenceBreakdown confidenceBreakdown) {
+        this(id, incident, candidateRootCause, rank, confidenceScore, status, summary, verificationPlan, counterEvidence);
+        if (supportingEvidenceIds != null) this.supportingEvidenceIds = new java.util.ArrayList<>(supportingEvidenceIds);
+        if (contradictingEvidenceIds != null) this.contradictingEvidenceIds = new java.util.ArrayList<>(contradictingEvidenceIds);
+        if (matchedRules != null) this.matchedRules = new java.util.ArrayList<>(matchedRules);
+        if (ruleMatchReasons != null) this.ruleMatchReasons = new java.util.LinkedHashMap<>(ruleMatchReasons);
+        if (penaltyReasons != null) this.penaltyReasons = new java.util.ArrayList<>(penaltyReasons);
+        this.rankingExplanation = rankingExplanation;
+        this.confidenceBreakdown = confidenceBreakdown;
     }
 
     @PrePersist
@@ -187,6 +228,62 @@ public class Hypothesis {
 
     public void setUpdatedAt(Instant updatedAt) {
         this.updatedAt = updatedAt;
+    }
+
+    public java.util.List<String> getSupportingEvidenceIds() {
+        return supportingEvidenceIds;
+    }
+
+    public void setSupportingEvidenceIds(java.util.List<String> supportingEvidenceIds) {
+        this.supportingEvidenceIds = supportingEvidenceIds != null ? supportingEvidenceIds : new java.util.ArrayList<>();
+    }
+
+    public java.util.List<String> getContradictingEvidenceIds() {
+        return contradictingEvidenceIds;
+    }
+
+    public void setContradictingEvidenceIds(java.util.List<String> contradictingEvidenceIds) {
+        this.contradictingEvidenceIds = contradictingEvidenceIds != null ? contradictingEvidenceIds : new java.util.ArrayList<>();
+    }
+
+    public java.util.List<String> getMatchedRules() {
+        return matchedRules;
+    }
+
+    public void setMatchedRules(java.util.List<String> matchedRules) {
+        this.matchedRules = matchedRules != null ? matchedRules : new java.util.ArrayList<>();
+    }
+
+    public java.util.Map<String, String> getRuleMatchReasons() {
+        return ruleMatchReasons;
+    }
+
+    public void setRuleMatchReasons(java.util.Map<String, String> ruleMatchReasons) {
+        this.ruleMatchReasons = ruleMatchReasons != null ? ruleMatchReasons : new java.util.LinkedHashMap<>();
+    }
+
+    public java.util.List<String> getPenaltyReasons() {
+        return penaltyReasons;
+    }
+
+    public void setPenaltyReasons(java.util.List<String> penaltyReasons) {
+        this.penaltyReasons = penaltyReasons != null ? penaltyReasons : new java.util.ArrayList<>();
+    }
+
+    public String getRankingExplanation() {
+        return rankingExplanation;
+    }
+
+    public void setRankingExplanation(String rankingExplanation) {
+        this.rankingExplanation = rankingExplanation;
+    }
+
+    public com.traceback.core.correlation.ConfidenceBreakdown getConfidenceBreakdown() {
+        return confidenceBreakdown;
+    }
+
+    public void setConfidenceBreakdown(com.traceback.core.correlation.ConfidenceBreakdown confidenceBreakdown) {
+        this.confidenceBreakdown = confidenceBreakdown;
     }
 
     @Override
