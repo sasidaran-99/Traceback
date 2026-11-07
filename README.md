@@ -52,6 +52,11 @@ TraceBack/
 │   ├── incident-scenarios.md    # Reproducible scenarios (A: Code, B: Config, C: Misleading commit)
 │   ├── evaluation-plan.md       # Baseline comparison, measurable metrics, evaluation harness
 │   └── roadmap.md               # Phased delivery plan from Phase 0 to Phase 5
+├── traceback-core/              # Domain models (Event, Relationship, Incident, Hypothesis), Enums, Repositories
+├── traceback-ingestion/         # Event ingestion DTOs, validation, service, and POST /api/events endpoint
+├── traceback-api/               # Spring Boot entry point, health endpoint, exception handler, Flyway migrations
+├── docker-compose.yml           # PostgreSQL 16 container definition with healthchecks
+├── pom.xml                      # Maven multi-module root POM
 ├── .env.example                 # Local environment template with placeholders
 ├── .gitignore                   # Multi-stack ignore rules (Java, Maven, Vite, IDEs)
 └── README.md                    # Project overview and index
@@ -69,4 +74,5 @@ TraceBack/
 ## 5. Current Project Status
 
 - **Phase 0 (Project Foundation and Investigation Design):** Complete.
-- **Next Phase:** **Phase 1 — Spring Boot Backend, PostgreSQL and Event Ingestion APIs**.
+- **Phase 1 (Spring Boot Backend, PostgreSQL and Event Ingestion APIs):** Complete.
+- **Next Phase:** **Phase 2 — GitHub Integration and Application Error Ingestion**.
