@@ -127,24 +127,60 @@ flowchart LR
 
 ---
 
-### Phase 5: React + TypeScript Dashboard and Evidence Visualization (Next)
-- **Objective**: Production-grade scalability, event replay, optional grounded AI explanation summaries, API security, and empirical evaluation on an expanded benchmark suite.
+### Phase 5: Interactive Investigation Dashboard (Completed)
+- **Objective**: Build a high-performance, dark-first developer investigation dashboard using React 18, TypeScript, Vite, Tailwind CSS, Lucide icons, and a typed REST API client connecting directly to the Spring Boot backend.
+- **Product Promise**: *"Don't just tell developers that something broke. Investigate what happened, explain why, and show the evidence."*
+- **Deliverables**:
+  - `frontend/` package scaffolding with Vite 5, React 18, TypeScript, Tailwind CSS, Lucide React, and Vitest.
+  - Typed API Service Layer:
+    - `apiClient`: Fetch wrapper with timeout controls, request normalization, and typed `ApiError` propagation.
+    - `investigationApi`: Full client coverage across all 12 backend endpoints (`/api/investigations/**`, `/api/health`).
+    - `types.ts`: Exhaustive TypeScript interfaces mirror backend DTOs.
+  - Multi-Page Navigation & Views:
+    - **Dashboard (`/`)**: Product hero banner, aggregated metrics (`StatsOverview`), and recent investigations table.
+    - **New Investigation (`/new`)**: Workflow A (full analysis with repo path, service, logs/traces) and Workflow B (existing investigation ID); interactive preset scenarios (HikariCP pool timeout, Division by zero).
+    - **Investigation Dossier (`/investigations/:id`)**: 7-tab central dossier:
+      1. *AI Report & Overview*: Agent reasoning, verification steps, uncertainties, leading confidence breakdown, deterministic fallback indicator.
+      2. *Hypotheses*: Ranked candidate root causes, matched rules, and verification plans.
+      3. *Claims*: Claim validation grounding table with supporting/contradicting evidence IDs.
+      4. *Evidence Explorer*: Filterable registry table with SHA-256 integrity checksums and expandable metadata.
+      5. *Timeline*: Chronological multi-track sequence with pre-failure and crash markers.
+      6. *Research*: Tavily technical research findings with clickable sources and evidence isolation disclaimer.
+      7. *Agent Steps*: Sequential execution audit log with timestamps and metadata tags.
+    - **History (`/history`)**: Filterable, searchable table of all recorded investigations with status pills.
+    - **Settings (`/settings`)**: Real-time backend health poller, gateway configuration status, confidence scoring policies, and security posture.
+  - Shared Design System:
+    - Dark-first aesthetic (`#0B0D11` obsidian background, amber/emerald/rose status accents, monospace fonts).
+    - `Badge`, `StatusPill`, `CodeBlock`, `LoadingSpinner`, `EmptyState`, `Header` (with live backend connection pill), `Sidebar`.
+  - Comprehensive Test Suite:
+    - 17 unit and component tests passing with Vitest and `@testing-library/react`.
+    - Zero build or linting errors with `tsc && vite build`.
+- **Dependencies**: Phase 4.
+- **Acceptance Criteria (Verified)**:
+  - All 17 frontend Vitest tests pass with zero errors.
+  - Production bundle builds cleanly in < 6 seconds.
+  - All 63 Spring Boot backend reactor tests pass without regressions.
+  - Zero API keys exposed to browser client (Bifrost & Tavily stay behind backend).
+  - Fully responsive, accessible, dark-first UI displaying real backend responses.
+
+---
+
+### Phase 6: Scale, Kafka Event Replay & Multi-Service Correlation (Planned)
+- **Objective**: Production-grade scalability, event replay, distributed tracing, Kafka buffering, and empirical evaluation on an expanded benchmark suite.
 - **Deliverables**:
   - Apache Kafka integration:
     - Decoupled event ingestion pipeline with topic partitioning (`events.commits`, `events.deployments`, `events.errors`).
     - Event replay service enabling historical re-investigation from arbitrary point-in-time snapshots.
-  - Auxiliary AI Narrative Explainer:
-    - Optional LLM service that synthesizes human-readable incident executive summaries.
-    - **Strict Constraint**: The LLM prompt is strictly grounded in the deterministic evidence graph; the LLM does not perform root-cause ranking or hypothesis scoring.
+  - Multi-Service Correlation:
+    - Cross-service trace propagation (OpenTelemetry / W3C Trace Context).
   - Security & Authentication:
     - Spring Security with JWT / API key authentication for ingestion and management APIs.
   - Expanded Evaluation Report:
     - Benchmarking across 15–20 diverse scenarios with published metrics comparing Traceback vs. MRC baseline.
-- **Dependencies**: Phase 4.
+- **Dependencies**: Phase 5.
 - **Acceptance Criteria**:
   - Ingestion buffer handles burst traffic without event loss under Kafka buffer testing.
   - Event replay accurately reproduces identical investigation graph outputs from historical snapshots.
-  - Auxiliary AI summaries contain zero hallucinations contradictory to the evidence graph.
   - Comprehensive evaluation benchmark report published documenting measured $\text{Acc@1}$, $\text{Acc@3}$, $\text{FPRR}$, and latency across all 15+ incidents.
 
 ---
@@ -158,5 +194,5 @@ flowchart LR
 | **Phase 2** | Deterministic Engine | Git history, Java stack trace parser, multiline log analyzer, correlation | Modular Monolith | **Complete** |
 | **Phase 3** | Evidence Validation & Eval | Deterministic claim validator, transparent confidence engine, benchmark harness | Modular Monolith | **Complete** |
 | **Phase 4** | Autonomous AI Agent | Bifrost gateway, Tavily research, evidence-grounded agent, audit steps | AI-Assisted Monolith | **Complete** |
-| **Phase 5** | Web UI Dashboard | React + TypeScript + Vite, interactive timeline & evidence graph | Monolith + SPA | Next |
-| **Phase 6** | Scale, Kafka & Replay | Kafka streaming, event replay, security, expanded 15+ eval report | Monolith + Kafka | Pending |
+| **Phase 5** | Web UI Dashboard | React 18, TypeScript, Vite, Tailwind CSS, 7-tab investigation dossier | Monolith + SPA Dashboard | **Complete** |
+| **Phase 6** | Scale, Kafka & Replay | Kafka streaming, event replay, security, expanded 15+ eval report | Monolith + Kafka | Planned |

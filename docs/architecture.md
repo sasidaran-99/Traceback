@@ -569,3 +569,73 @@ flowchart TD
 4. **Deterministic Fallback Resilience**:
    - If Bifrost or Tavily are offline, rate-limited, or unconfigured, the agent automatically executes a deterministic-only fallback.
    - Audit steps record all gateway decisions and errors, ensuring full observability across the triage workflow.
+
+---
+
+## 12. Interactive Investigation Dashboard (Phase 5)
+
+Traceback provides a developer-facing interactive single-page application built on React 18, TypeScript, and Vite. Designed under a dark-first aesthetic (`#0B0D11` obsidian canvas, monospace typography, restrained amber/emerald/rose status signals), it acts as an investigative workbench rather than a generic administrative panel.
+
+### 12.1 Presentation Architecture
+
+```mermaid
+flowchart TD
+    subgraph Browser["Browser Client (React 18 + Vite)"]
+        UI[UI Components & Views]
+        ApiClient[Typed ApiClient & InvestigationApi]
+        Health[useHealth Polling Hook]
+    end
+
+    subgraph Backend["Spring Boot Monolith (Port 8080)"]
+        Cors[CorsConfig Filter]
+        InvCtrl[InvestigationController]
+        AgentCtrl[AgentInvestigationController]
+        HealthCtrl[HealthController]
+    end
+
+    subgraph SecurityBoundary["Strict Security Boundary"]
+        BifrostKey[BIFROST_API_KEY]
+        TavilyKey[TAVILY_API_KEY]
+        DB[(PostgreSQL 16)]
+    end
+
+    UI --> ApiClient
+    Health -->|GET /api/health| ApiClient
+    ApiClient -->|JSON over HTTP| Cors
+    Cors --> InvCtrl
+    Cors --> AgentCtrl
+    Cors --> HealthCtrl
+
+    AgentCtrl -.-> BifrostKey
+    AgentCtrl -.-> TavilyKey
+    InvCtrl -.-> DB
+```
+
+### 12.2 Security Boundary & Invariants
+
+1. **Zero Secret Leakage**:
+   - Neither Bifrost nor Tavily API keys are ever transferred to, accessible by, or stored in browser client memory or local storage.
+   - All external intelligence operations remain strictly behind Spring Boot backend controllers.
+2. **Deterministic Evidence Isolation**:
+   - The UI distinguishes local evidence items (with verified SHA-256 integrity checksums) from external Tavily research findings (`RES-TAVILY-...`).
+   - External research is explicitly rendered in its own isolated tab with clickable source citations and educational caveats.
+3. **Epistemological Integrity**:
+   - The UI visualizes the exact deterministic scoring formula ($S = T + O + A - C$), normalized score, positive points, and contradiction penalties.
+   - A decision-support notice reminds developers that confidence scores are heuristic rankings, not calibrated Bayesian probabilities.
+
+### 12.3 Views & Capabilities
+
+- **System Dashboard (`/`)**: High-level platform metrics (`StatsOverview`), product promise hero, and quick links to recent investigations.
+- **New Investigation (`/new`)**:
+  - *Workflow A (New Analysis)*: Ingests repository path, service name, environment, and logs/stack traces. Includes one-click presets for Scenario A (Division by Zero) and Scenario B (HikariCP pool timeout).
+  - *Workflow B (Existing ID)*: Dispatches the autonomous AI agent on an existing deterministic investigation record.
+- **Investigation Dossier (`/investigations/:id`)**: Central multi-tab investigation dossier:
+  1. *AI Report & Overview*: Agent reasoning, recommended verification steps, remaining uncertainties, leading confidence breakdown, deterministic fallback indicator.
+  2. *Hypotheses*: Ranked candidate causes, matched rules, and verification plan.
+  3. *Claim Validation*: Grounding table showing validation status (`SUPPORTED`, `UNSUPPORTED`, `CONTRADICTED`), cited evidence IDs, and human-readable explanations.
+  4. *Evidence Explorer*: Filterable registry table with SHA-256 payload checksums and expandable metadata.
+  5. *Timeline*: Chronological multi-track sequence with pre-failure and crash markers.
+  6. *Technical Research*: Tavily research cards with clickable sources.
+  7. *Agent Audit Trail*: Sequential execution audit log with timestamps and metadata tags.
+- **Investigation History (`/history`)**: Filterable, searchable table of all recorded investigations.
+- **System Settings (`/settings`)**: Live backend health poller, gateway configuration status, scoring policy reference, and security posture.

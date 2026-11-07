@@ -55,6 +55,7 @@ TraceBack/
 ├── traceback-core/              # Domain models, repositories, Git collector, Log analyzer, Stack trace parser, Evidence registry, Correlation engine
 ├── traceback-ingestion/         # Event ingestion DTOs, validation, service, and POST /api/events endpoint
 ├── traceback-api/               # Spring Boot application, investigation controller, REST APIs, Flyway migrations
+├── frontend/                    # Interactive Investigation Dashboard (React 18, TypeScript, Vite, Tailwind CSS)
 ├── docker-compose.yml           # PostgreSQL 16 container definition with healthchecks
 ├── pom.xml                      # Maven multi-module root POM
 ├── .env.example                 # Local environment template with placeholders
@@ -99,4 +100,37 @@ TraceBack/
     - `GET /api/investigations/{id}/agent-report`: Retrieve structured AI agent investigation report.
     - `GET /api/investigations/{id}/research`: Retrieve external technical research findings and citations.
     - `GET /api/investigations/{id}/agent-steps`: Retrieve auditable sequential investigation trail.
-- **Next Phase:** **Phase 5 — Interactive Investigation UI (React + TypeScript)**.
+- **Phase 5 (Interactive Investigation Dashboard — React + TypeScript + Vite):** Complete.
+  - **Full-Stack Presentation Layer:** Polished, dark-first investigation dashboard built with React 18, TypeScript, Vite, Tailwind CSS, and Lucide icons.
+  - **Single Source of Truth:** Connects directly to the Spring Boot REST API (`http://localhost:8080`) displaying real backend investigation records, verified evidence, and agent reasoning.
+  - **Key Views & Capabilities:**
+    - **Dashboard (`/`)**: Product hero banner, live system statistics (`StatsOverview`), and recent investigations table.
+    - **New Investigation (`/new`)**: Dual workflow support (Workflow A: new analysis from repository path + logs/stack traces; Workflow B: autonomous agent dispatch on existing ID) with interactive scenario presets (HikariCP starvation, Division by zero).
+    - **Investigation Dossier (`/investigations/:id`)**: Comprehensive 7-tab deep-dive view covering Overview/AI Report, Ranked Hypotheses, Claim Grounding Table, Evidence Explorer (SHA-256 integrity hashes), Reconstructed Chronological Timeline, External Technical Research (Tavily), and Sequential Agent Audit Trail.
+    - **History (`/history`)**: Searchable, status-filterable table of all investigations.
+    - **Settings (`/settings`)**: Live backend health monitor, API gateway configuration status, scoring policy reference, and zero-client-secret security posture.
+  - **Security Architecture:** Bifrost and Tavily API keys remain strictly on the Spring Boot backend; zero credentials exposed in client JavaScript.
+  - **Quality & Testing:** 17 frontend Vitest tests + 63 Spring Boot JUnit tests (100% green).
+- **Next Phase:** **Phase 6 — Scale, Kafka Event Replay & Multi-Service Correlation**.
+
+---
+
+## 6. Getting Started
+
+### Terminal 1: Start the Spring Boot Backend
+
+```bash
+# Ensure Java 21 is active
+mvn spring-boot:run -pl traceback-api
+```
+Backend will start on `http://localhost:8080` (healthcheck: `http://localhost:8080/api/health`).
+
+### Terminal 2: Start the React Frontend Dashboard
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+Open [http://localhost:5173](http://localhost:5173) in your browser. Launch an investigation by selecting a preset on the `/new` page or providing your local repository path.
+

@@ -62,6 +62,14 @@ public class AgentInvestigationController {
     }
 
     /**
+     * Lists all autonomous AI agent reports.
+     */
+    @GetMapping("/agent")
+    public ResponseEntity<List<InvestigationAgentReport>> getAllAgentReports() {
+        return ResponseEntity.ok(investigationAgent.getAllReports());
+    }
+
+    /**
      * Retrieves the AI agent's structured report for an investigation.
      */
     @GetMapping("/{id}/agent-report")

@@ -263,6 +263,10 @@ public class InvestigationAgent {
         return report;
     }
 
+    public List<InvestigationAgentReport> getAllReports() {
+        return List.copyOf(reportStore.values());
+    }
+
     public Optional<InvestigationAgentReport> getReport(UUID investigationId) {
         return Optional.ofNullable(reportStore.get(investigationId));
     }

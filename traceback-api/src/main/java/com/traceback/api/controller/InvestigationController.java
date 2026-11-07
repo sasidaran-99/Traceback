@@ -60,6 +60,17 @@ public class InvestigationController {
     }
 
     /**
+     * Lists all investigations tracked in memory.
+     */
+    @GetMapping
+    public ResponseEntity<List<InvestigationResponse>> getAllInvestigations() {
+        List<InvestigationResponse> list = investigationService.getAllInvestigations().stream()
+                .map(InvestigationResponse::fromResult)
+                .toList();
+        return ResponseEntity.ok(list);
+    }
+
+    /**
      * Retrieves an overview of an investigation by ID.
      */
     @GetMapping("/{id}")

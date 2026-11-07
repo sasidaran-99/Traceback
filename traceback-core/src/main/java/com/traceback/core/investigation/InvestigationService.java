@@ -218,6 +218,10 @@ public class InvestigationService {
         return getInvestigation(id).map(InvestigationResult::claims).orElse(Collections.emptyList());
     }
 
+    public List<InvestigationResult> getAllInvestigations() {
+        return List.copyOf(investigationStore.values());
+    }
+
     public EvidenceRegistry getEvidenceRegistry() {
         return evidenceRegistry;
     }
