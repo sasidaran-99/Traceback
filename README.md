@@ -517,13 +517,3 @@ To maintain engineering integrity, TraceBack 2.0 explicitly defines its technica
 
 ---
 
-## Team & Acknowledgements
-
-Developed for the Hackathon by the **TraceBack Engineering Team**.
-
-Special thanks to the open-source ecosystems powering TraceBack:
-- [Spring Boot](https://spring.io/projects/spring-boot) & [Spring Security](https://spring.io/projects/spring-security)
-- [Eclipse JGit](https://www.eclipse.org/jgit/)
-- [React](https://react.dev/) & [Vite](https://vitejs.dev/)
-- [Tailwind CSS](https://tailwindcss.com/) & [Lucide Icons](https://lucide.dev/)
-- [PostgreSQL](https://www.postgresql.org/) & [Flyway](https://flywaydb.org/)
