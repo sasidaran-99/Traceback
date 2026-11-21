@@ -33,7 +33,11 @@ public record InvestigationAgentReport(
         AgentInvestigationStatus finalStatus,
         List<InvestigationClaim> validatedClaims,
         List<AgentInvestigationStep> investigationSteps,
-        Instant generatedAt
+        Instant generatedAt,
+        String bifrostExecutionStatus,
+        String tavilyExecutionStatus,
+        Boolean persistedDurable,
+        String persistenceStatus
 ) {
     public InvestigationAgentReport {
         if (alternativeHypotheses == null) alternativeHypotheses = Collections.emptyList();
@@ -46,5 +50,131 @@ public record InvestigationAgentReport(
         if (validatedClaims == null) validatedClaims = Collections.emptyList();
         if (investigationSteps == null) investigationSteps = Collections.emptyList();
         if (generatedAt == null) generatedAt = Instant.now();
+        if (bifrostExecutionStatus == null) bifrostExecutionStatus = "UNCONFIGURED";
+        if (tavilyExecutionStatus == null) tavilyExecutionStatus = "SKIPPED_UNCONFIGURED";
+        if (persistedDurable == null) persistedDurable = false;
+        if (persistenceStatus == null) persistenceStatus = persistedDurable ? "DURABLE" : "EPHEMERAL";
+    }
+
+    /**
+     * Backwards-compatible 19-parameter constructor.
+     */
+    public InvestigationAgentReport(
+            String reportId,
+            UUID investigationId,
+            String summary,
+            String primarySuspectedRootCause,
+            List<Hypothesis> alternativeHypotheses,
+            List<String> supportingEvidenceIds,
+            List<String> contradictoryEvidenceIds,
+            ConfidenceBreakdown deterministicConfidenceBreakdown,
+            String aiReasoningSummary,
+            List<ExternalResearchFinding> externalResearchFindings,
+            List<String> sourceUrls,
+            List<String> recommendedVerificationSteps,
+            List<String> remainingUncertainties,
+            AgentInvestigationStatus finalStatus,
+            List<InvestigationClaim> validatedClaims,
+            List<AgentInvestigationStep> investigationSteps,
+            Instant generatedAt,
+            String bifrostExecutionStatus,
+            String tavilyExecutionStatus
+    ) {
+        this(
+                reportId,
+                investigationId,
+                summary,
+                primarySuspectedRootCause,
+                alternativeHypotheses,
+                supportingEvidenceIds,
+                contradictoryEvidenceIds,
+                deterministicConfidenceBreakdown,
+                aiReasoningSummary,
+                externalResearchFindings,
+                sourceUrls,
+                recommendedVerificationSteps,
+                remainingUncertainties,
+                finalStatus,
+                validatedClaims,
+                investigationSteps,
+                generatedAt,
+                bifrostExecutionStatus,
+                tavilyExecutionStatus,
+                false,
+                "EPHEMERAL"
+        );
+    }
+
+    /**
+     * Backwards-compatible 17-parameter constructor for legacy callers and mappers.
+     */
+    public InvestigationAgentReport(
+            String reportId,
+            UUID investigationId,
+            String summary,
+            String primarySuspectedRootCause,
+            List<Hypothesis> alternativeHypotheses,
+            List<String> supportingEvidenceIds,
+            List<String> contradictoryEvidenceIds,
+            ConfidenceBreakdown deterministicConfidenceBreakdown,
+            String aiReasoningSummary,
+            List<ExternalResearchFinding> externalResearchFindings,
+            List<String> sourceUrls,
+            List<String> recommendedVerificationSteps,
+            List<String> remainingUncertainties,
+            AgentInvestigationStatus finalStatus,
+            List<InvestigationClaim> validatedClaims,
+            List<AgentInvestigationStep> investigationSteps,
+            Instant generatedAt
+    ) {
+        this(
+                reportId,
+                investigationId,
+                summary,
+                primarySuspectedRootCause,
+                alternativeHypotheses,
+                supportingEvidenceIds,
+                contradictoryEvidenceIds,
+                deterministicConfidenceBreakdown,
+                aiReasoningSummary,
+                externalResearchFindings,
+                sourceUrls,
+                recommendedVerificationSteps,
+                remainingUncertainties,
+                finalStatus,
+                validatedClaims,
+                investigationSteps,
+                generatedAt,
+                "UNCONFIGURED",
+                "SKIPPED_UNCONFIGURED",
+                false,
+                "EPHEMERAL"
+        );
+    }
+
+    public InvestigationAgentReport withPersistenceStatus(boolean persistedDurable, String persistenceStatus) {
+        return new InvestigationAgentReport(
+                reportId,
+                investigationId,
+                summary,
+                primarySuspectedRootCause,
+                alternativeHypotheses,
+                supportingEvidenceIds,
+                contradictoryEvidenceIds,
+                deterministicConfidenceBreakdown,
+                aiReasoningSummary,
+                externalResearchFindings,
+                sourceUrls,
+                recommendedVerificationSteps,
+                remainingUncertainties,
+                finalStatus,
+                validatedClaims,
+                investigationSteps,
+                generatedAt,
+                bifrostExecutionStatus,
+                tavilyExecutionStatus,
+                persistedDurable,
+                persistenceStatus
+        );
     }
 }

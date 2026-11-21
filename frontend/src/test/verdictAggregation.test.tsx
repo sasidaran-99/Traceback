@@ -201,8 +201,8 @@ describe('Verdict Aggregation & Dashboard Metric Consistency', () => {
     expect(screen.getByText('0 Confirmed')).toBeInTheDocument();
     // Subtitle in card 4
     expect(screen.getByText(/1 Probable \| 1 Insufficient/i)).toBeInTheDocument();
-    // Friendly runtime memory wording in card 1
-    expect(screen.getByText(/2 live session records \(in-memory runtime\)/i)).toBeInTheDocument();
+    // Persisted records wording in card 1
+    expect(screen.getByText(/2 persisted records/i)).toBeInTheDocument();
     // Total analyzed and Errors Diagnosed both show '2'
     expect(screen.getAllByText('2').length).toBeGreaterThanOrEqual(2);
   });
@@ -228,9 +228,9 @@ describe('Verdict Aggregation & Dashboard Metric Consistency', () => {
     // Scores
     expect(screen.getByText('71.0%')).toBeInTheDocument();
 
-    // Friendly subtitle
+    // Subtitle indicating persistence
     expect(
-      screen.getByText(/Live records available in current server session \(in-memory runtime\)/i)
+      screen.getByText(/Persisted records from completed investigations/i)
     ).toBeInTheDocument();
   });
 });

@@ -42,7 +42,7 @@ class DeterministicClaimValidatorTest {
 
         InvestigationClaim result = validator.validateClaim(claim, investigationId, registry);
 
-        assertThat(result.status()).isEqualTo(ClaimValidationStatus.UNSUPPORTED);
+        assertThat(result.status()).isEqualTo(ClaimValidationStatus.VALIDATION_ERROR);
         assertThat(result.explanation()).contains("cites zero supporting evidence IDs");
     }
 
@@ -59,7 +59,7 @@ class DeterministicClaimValidatorTest {
 
         InvestigationClaim result = validator.validateClaim(claim, investigationId, registry);
 
-        assertThat(result.status()).isEqualTo(ClaimValidationStatus.UNSUPPORTED);
+        assertThat(result.status()).isEqualTo(ClaimValidationStatus.VALIDATION_ERROR);
         assertThat(result.explanation()).contains("was not found in the active evidence registry");
     }
 
@@ -88,7 +88,7 @@ class DeterministicClaimValidatorTest {
 
         InvestigationClaim result = validator.validateClaim(claim, investigationId, registry);
 
-        assertThat(result.status()).isEqualTo(ClaimValidationStatus.UNSUPPORTED);
+        assertThat(result.status()).isEqualTo(ClaimValidationStatus.VALIDATION_ERROR);
         assertThat(result.explanation()).contains("belongs to a different investigation");
     }
 
@@ -118,7 +118,7 @@ class DeterministicClaimValidatorTest {
 
         InvestigationClaim result = validator.validateClaim(claim, investigationId, registry);
 
-        assertThat(result.status()).isEqualTo(ClaimValidationStatus.UNSUPPORTED);
+        assertThat(result.status()).isEqualTo(ClaimValidationStatus.VALIDATION_ERROR);
         assertThat(result.explanation()).contains("failed cryptographic SHA-256 integrity checksum");
     }
 

@@ -24,6 +24,7 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -48,8 +49,19 @@ public class LogAnalyzer {
             "^(\\d{4}-\\d{2}-\\d{2}[T ]\\d{2}:\\d{2}:\\d{2}(?:[.,]\\d{3,6})?(?:Z|[+-]\\d{2}:?\\d{2})?)\\s+\\[([^\\]]+)\\]\\s+([A-Z]+)\\s+([\\w$.]+)\\s*[-:]\\s*(.*)$"
     );
 
+    // Matches Python logging format: 2026-11-08 14:15:00,123 - root - ERROR - message
+    private static final Pattern PYTHON_DASH_LOG_PATTERN = Pattern.compile(
+            "^(\\d{4}-\\d{2}-\\d{2}[T ]\\d{2}:\\d{2}:\\d{2}(?:[.,]\\d{3,6})?(?:Z|[+-]\\d{2}:?\\d{2})?)\\s*-\\s*([\\w$.]+)\\s*-\\s*([A-Z]+)\\s*-\\s*(.*)$"
+    );
+
+    // Matches Node / bracketed format: [2026-11-08T14:15:00.123Z] [ERROR] [logger] message
+    private static final Pattern BRACKETED_LOG_PATTERN = Pattern.compile(
+            "^\\[(\\d{4}-\\d{2}-\\d{2}[T ]\\d{2}:\\d{2}:\\d{2}(?:[.,]\\d{3,6})?(?:Z|[+-]\\d{2}:?\\d{2})?)\\]\\s+\\[([A-Z]+)\\](?:\\s+\\[([^\\]]+)\\])?\\s*[-:]?\\s*(.*)$"
+    );
+
     private static final DateTimeFormatter ISO_FORMATTER = DateTimeFormatter.ISO_DATE_TIME;
     private static final DateTimeFormatter SPACE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS");
+    private static final DateTimeFormatter SPACE_COMMA_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss,SSS");
     private static final DateTimeFormatter SPACE_SEC_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     private final StackTraceParser stackTraceParser;
@@ -70,6 +82,10 @@ public class LogAnalyzer {
     public LogEvidence analyzeFile(Path logFilePath) throws IOException {
         if (!Files.exists(logFilePath)) {
             throw new IllegalArgumentException("Log file does not exist: " + logFilePath);
+        }
+        long size = Files.size(logFilePath);
+        if (size > 5 * 1024 * 1024) {
+            throw new IllegalArgumentException("Log file exceeds maximum allowed size of 5MB: " + size + " bytes");
         }
         String content = Files.readString(logFilePath);
         return analyzeContent(content);
@@ -99,10 +115,18 @@ public class LogAnalyzer {
             return new LogEvidence(null, null, 0, totalWarnings, Collections.emptyList(), Collections.emptyMap(), null, null);
         }
 
-        // Determine chronological boundaries
-        errorEntries.sort(Comparator.comparing(LogEntry::timestamp));
-        Instant firstFailure = errorEntries.get(0).timestamp();
-        Instant lastFailure = errorEntries.get(errorEntries.size() - 1).timestamp();
+        // Determine chronological boundaries safely with null-aware comparator
+        errorEntries.sort(Comparator.comparing(LogEntry::timestamp, Comparator.nullsLast(Comparator.naturalOrder())));
+        Instant firstFailure = errorEntries.stream()
+                .map(LogEntry::timestamp)
+                .filter(Objects::nonNull)
+                .min(Comparator.naturalOrder())
+                .orElse(null);
+        Instant lastFailure = errorEntries.stream()
+                .map(LogEntry::timestamp)
+                .filter(Objects::nonNull)
+                .max(Comparator.naturalOrder())
+                .orElse(null);
 
         // Group errors by signature
         Map<ErrorSignature, List<LogEntry>> grouped = new LinkedHashMap<>();
@@ -166,6 +190,8 @@ public class LogAnalyzer {
                 // Check if line matches a new log entry header (Spring Boot standard or Log4j thread-first)
                 Matcher matcher = SPRING_LOG_PATTERN.matcher(trimmed);
                 Matcher tfMatcher = THREAD_FIRST_LOG_PATTERN.matcher(trimmed);
+                Matcher pyMatcher = PYTHON_DASH_LOG_PATTERN.matcher(trimmed);
+                Matcher bracketMatcher = BRACKETED_LOG_PATTERN.matcher(trimmed);
 
                 if (matcher.find()) {
                     if (current != null) {
@@ -191,6 +217,28 @@ public class LogAnalyzer {
                     String message = tfMatcher.group(5);
 
                     current = new RawLogBuilder(timestamp, level, thread, logger, message, lineNumber);
+                } else if (pyMatcher.find()) {
+                    if (current != null) {
+                        entries.add(current.build(stackTraceParser));
+                    }
+
+                    Instant timestamp = parseTimestamp(pyMatcher.group(1));
+                    String logger = pyMatcher.group(2);
+                    String level = pyMatcher.group(3);
+                    String message = pyMatcher.group(4);
+
+                    current = new RawLogBuilder(timestamp, level, "main", logger, message, lineNumber);
+                } else if (bracketMatcher.find()) {
+                    if (current != null) {
+                        entries.add(current.build(stackTraceParser));
+                    }
+
+                    Instant timestamp = parseTimestamp(bracketMatcher.group(1));
+                    String level = bracketMatcher.group(2);
+                    String logger = bracketMatcher.group(3) != null ? bracketMatcher.group(3) : "app";
+                    String message = bracketMatcher.group(4);
+
+                    current = new RawLogBuilder(timestamp, level, "main", logger, message, lineNumber);
                 } else {
                     // Multiline continuation (e.g. stack trace frame or extra message lines)
                     if (current != null) {
@@ -231,7 +279,7 @@ public class LogAnalyzer {
 
     private Instant parseTimestamp(String raw) {
         if (raw == null || raw.isBlank()) {
-            return Instant.now();
+            return null;
         }
         try {
             return Instant.parse(raw);
@@ -249,11 +297,16 @@ public class LogAnalyzer {
         }
 
         try {
+            return LocalDateTime.parse(raw, SPACE_COMMA_FORMATTER).toInstant(ZoneOffset.UTC);
+        } catch (DateTimeParseException ignored) {
+        }
+
+        try {
             return LocalDateTime.parse(raw, SPACE_SEC_FORMATTER).toInstant(ZoneOffset.UTC);
         } catch (DateTimeParseException ignored) {
         }
 
-        return Instant.now();
+        return null;
     }
 
     private ErrorSignature deriveSignature(LogEntry entry) {

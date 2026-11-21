@@ -56,3 +56,14 @@ pgdata/
 # Log Files
 *.log
 logs/
+
+# Database Backups & Local Dump Artifacts
+backups/
+*.dump
+
+# Local Development Diagnostic Scratchpad & Temporary Runbooks
+scratch/
+
+# Synthetic integration fixture repositories (dynamically generated via setup_fixtures)
+fixtures/synthetic-*/
+

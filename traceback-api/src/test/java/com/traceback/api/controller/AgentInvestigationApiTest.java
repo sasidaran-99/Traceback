@@ -17,6 +17,7 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.http.MediaType;
+import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
@@ -39,6 +40,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
+@WithMockUser(roles = "OPERATOR")
 class AgentInvestigationApiTest {
 
     @Autowired
@@ -181,5 +183,220 @@ class AgentInvestigationApiTest {
                 .andExpect(status().isNotFound());
         mockMvc.perform(get("/api/investigations/" + nonExistent + "/agent-steps"))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    @DisplayName("Agent API: WORKING_TREE_FORENSICS mode accepts empty telemetry and identifies missing tracked files")
+    void shouldExecuteAgentWorkingTreeForensicsWithoutLogsOrStackTrace(@TempDir Path tempRepo) throws Exception {
+        // Setup git repo with tracked file that physically disappears from working directory
+        try (Git git = Git.init().setDirectory(tempRepo.toFile()).call()) {
+            Path file1 = tempRepo.resolve("BackendService.java");
+            Files.writeString(file1, "public class BackendService {}");
+            git.add().addFilepattern("BackendService.java").call();
+            git.commit().setMessage("Initial commit tracking backend").call();
+
+            // Physically delete file from working tree without git rm/commit
+            Files.delete(file1);
+        }
+
+        String payload = """
+                {
+                    "investigationMode": "WORKING_TREE_FORENSICS",
+                    "repositoryPath": "%s",
+                    "serviceName": "backend-service",
+                    "environment": "staging"
+                }
+                """.formatted(tempRepo.toString().replace("\\", "\\\\"));
+
+        MvcResult result = mockMvc.perform(post("/api/investigations/agent")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.reportId").isNotEmpty())
+                .andExpect(jsonPath("$.finalStatus").value("CONFIRMED"))
+                .andExpect(jsonPath("$.summary").value(org.hamcrest.Matchers.containsString("Working tree anomaly: 1 tracked files missing from disk")))
+                .andExpect(jsonPath("$.summary").value(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("Unknown error"))))
+                .andExpect(jsonPath("$.summary").value(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("Runtime failure"))))
+                .andExpect(jsonPath("$.primarySuspectedRootCause").value(org.hamcrest.Matchers.containsString("Working tree filesystem anomaly")))
+                .andExpect(jsonPath("$.supportingEvidenceIds[0]").value(org.hamcrest.Matchers.startsWith("EVD-WT-MISSING-")))
+                .andReturn();
+
+        String body = result.getResponse().getContentAsString();
+        org.assertj.core.api.Assertions.assertThat(body).doesNotContain("OneDrive caused");
+        org.assertj.core.api.Assertions.assertThat(body).doesNotContain("Antivirus quarantined");
+    }
+
+    @Test
+    @DisplayName("Phase 2.50: POST /api/investigations/agent deduplicates identical implicit requests")
+    void shouldDeduplicateIdenticalAgentInvestigationRequests(@TempDir Path tempRepo) throws Exception {
+        try (Git git = Git.init().setDirectory(tempRepo.toFile()).call()) {
+            Path file = tempRepo.resolve("Worker.java");
+            Files.writeString(file, "class Worker {}");
+            git.add().addFilepattern("Worker.java").call();
+            git.commit().setMessage("Initial commit").call();
+        }
+
+        when(bifrostClient.isAvailable()).thenReturn(false);
+        when(tavilyService.isAvailable()).thenReturn(false);
+
+        String escapedRepo = tempRepo.toString().replace("\\", "\\\\");
+        String payload = """
+                {
+                    "repositoryPath": "%s",
+                    "logContent": "2026-10-10 15:00:00.000 ERROR 1 --- [worker] Worker : IllegalStateException in Worker.java:5",
+                    "serviceName": "worker-service",
+                    "environment": "production",
+                    "windowMinutes": 60,
+                    "maxCommits": 10
+                }
+                """.formatted(escapedRepo);
+
+        // 1. Initial agent request: not deduplicated
+        MvcResult res1 = mockMvc.perform(post("/api/investigations/agent")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header().string("X-TraceBack-Deduplicated", "false"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header().exists("X-TraceBack-Investigation-Id"))
+                .andReturn();
+
+        String invId1 = res1.getResponse().getHeader("X-TraceBack-Investigation-Id");
+
+        // 2. Identical agent request: deduplicated
+        MvcResult res2 = mockMvc.perform(post("/api/investigations/agent")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header().string("X-TraceBack-Deduplicated", "true"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header().string("X-TraceBack-Investigation-Id", invId1))
+                .andReturn();
+
+        // 3. Request with forceNew=true: fresh execution
+        String forceNewPayload = """
+                {
+                    "repositoryPath": "%s",
+                    "logContent": "2026-10-10 15:00:00.000 ERROR 1 --- [worker] Worker : IllegalStateException in Worker.java:5",
+                    "serviceName": "worker-service",
+                    "environment": "production",
+                    "windowMinutes": 60,
+                    "maxCommits": 10,
+                    "forceNew": true
+                }
+                """.formatted(escapedRepo);
+
+        MvcResult res3 = mockMvc.perform(post("/api/investigations/agent")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(forceNewPayload))
+                .andExpect(status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header().string("X-TraceBack-Deduplicated", "false"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header().exists("X-TraceBack-Investigation-Id"))
+                .andReturn();
+
+        String invId3 = res3.getResponse().getHeader("X-TraceBack-Investigation-Id");
+        org.assertj.core.api.Assertions.assertThat(invId3).isNotEqualTo(invId1);
+    }
+
+    @Test
+    @DisplayName("POST /api/investigations/agent/run route alias executes agent investigation and supports deduplication")
+    void testAgentRunEndpointAlias(@TempDir Path tempRepo) throws Exception {
+        try (Git git = Git.init().setDirectory(tempRepo.toFile()).call()) {
+            Path file = tempRepo.resolve("Server.java");
+            Files.writeString(file, "class Server {}");
+            git.add().addFilepattern("Server.java").call();
+            git.commit().setMessage("Initial commit").call();
+        }
+
+        when(bifrostClient.isAvailable()).thenReturn(false);
+        when(tavilyService.isAvailable()).thenReturn(false);
+
+        String escapedRepo = tempRepo.toString().replace("\\", "\\\\");
+        String payload = """
+                {
+                    "repositoryPath": "%s",
+                    "logContent": "2026-10-10 17:00:00.000 ERROR 1 --- [server] Server : SocketTimeoutException in Server.java:10",
+                    "serviceName": "server-service",
+                    "environment": "production",
+                    "windowMinutes": 60,
+                    "maxCommits": 10
+                }
+                """.formatted(escapedRepo);
+
+        // First call to /api/investigations/agent/run
+        MvcResult res1 = mockMvc.perform(post("/api/investigations/agent/run")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header().string("X-TraceBack-Deduplicated", "false"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header().exists("X-TraceBack-Investigation-Id"))
+                .andReturn();
+
+        String invId1 = res1.getResponse().getHeader("X-TraceBack-Investigation-Id");
+
+        // Second call with identical payload: deduplicated
+        mockMvc.perform(post("/api/investigations/agent/run")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header().string("X-TraceBack-Deduplicated", "true"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header().string("X-TraceBack-Investigation-Id", invId1));
+    }
+
+    @Test
+    @DisplayName("Continuous MDC correlation: thread local MDC does not leak after execution and maintains correlation")
+    void testContinuousMdcCorrelationAcrossDeduplicatedExecution(@TempDir Path tempRepo) throws Exception {
+        try (Git git = Git.init().setDirectory(tempRepo.toFile()).call()) {
+            Path file = tempRepo.resolve("Worker.java");
+            Files.writeString(file, "class Worker {}");
+            git.add().addFilepattern("Worker.java").call();
+            git.commit().setMessage("Initial commit").call();
+        }
+
+        when(bifrostClient.isAvailable()).thenReturn(false);
+        when(tavilyService.isAvailable()).thenReturn(false);
+
+        String escapedRepo = tempRepo.toString().replace("\\", "\\\\");
+        String payload = """
+                {
+                    "repositoryPath": "%s",
+                    "logContent": "2026-10-10 18:00:00.000 ERROR 1 --- [worker] Worker : IllegalStateException in Worker.java:20",
+                    "serviceName": "worker-service",
+                    "environment": "production",
+                    "windowMinutes": 60,
+                    "maxCommits": 10
+                }
+                """.formatted(escapedRepo);
+
+        // Before request, MDC is clean
+        org.assertj.core.api.Assertions.assertThat(com.traceback.core.logging.InvestigationLoggingContext.get()).isNull();
+
+        MvcResult res1 = mockMvc.perform(post("/api/investigations/agent")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header().string("X-TraceBack-Deduplicated", "false"))
+                .andReturn();
+
+        String invId = res1.getResponse().getHeader("X-TraceBack-Investigation-Id");
+        org.assertj.core.api.Assertions.assertThat(invId).isNotNull();
+
+        // After completion of initial request, MDC must NOT leak into the caller thread
+        org.assertj.core.api.Assertions.assertThat(com.traceback.core.logging.InvestigationLoggingContext.get()).isNull();
+
+        // Second request (deduplicated cache hit):
+        MvcResult res2 = mockMvc.perform(post("/api/investigations/agent")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header().string("X-TraceBack-Deduplicated", "true"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header().string("X-TraceBack-Investigation-Id", invId))
+                .andReturn();
+
+        // After completion of deduplicated request, MDC must NOT leak
+        org.assertj.core.api.Assertions.assertThat(com.traceback.core.logging.InvestigationLoggingContext.get()).isNull();
+
+        // Querying endpoints with ID also correctly cleans up MDC
+        mockMvc.perform(get("/api/investigations/" + invId + "/agent-report"))
+                .andExpect(status().isOk());
+        org.assertj.core.api.Assertions.assertThat(com.traceback.core.logging.InvestigationLoggingContext.get()).isNull();
     }
 }

@@ -23,6 +23,9 @@ public record ChangedFile(
 
     public static boolean isConfigurationPath(String path) {
         if (path == null) return false;
+        if (isSourceCodePath(path)) {
+            return false;
+        }
         String lower = path.toLowerCase();
         return lower.endsWith(".properties")
                 || lower.endsWith(".yml")
@@ -32,7 +35,34 @@ public record ChangedFile(
                 || lower.endsWith(".env")
                 || lower.endsWith(".conf")
                 || lower.endsWith(".ini")
-                || lower.contains("application")
-                || lower.contains("config");
+                || lower.endsWith(".toml")
+                || lower.endsWith(".cfg")
+                || lower.endsWith("dockerfile")
+                || lower.endsWith(".cnf")
+                || ((lower.contains("application.") || lower.contains("config.")) && !isSourceCodePath(path));
+    }
+
+    public static boolean isSourceCodePath(String path) {
+        if (path == null) return false;
+        String lower = path.toLowerCase();
+        return lower.endsWith(".java")
+                || lower.endsWith(".kt")
+                || lower.endsWith(".groovy")
+                || lower.endsWith(".scala")
+                || lower.endsWith(".py")
+                || lower.endsWith(".js")
+                || lower.endsWith(".jsx")
+                || lower.endsWith(".ts")
+                || lower.endsWith(".tsx")
+                || lower.endsWith(".cs")
+                || lower.endsWith(".go")
+                || lower.endsWith(".rs")
+                || lower.endsWith(".rb")
+                || lower.endsWith(".php")
+                || lower.endsWith(".c")
+                || lower.endsWith(".cpp")
+                || lower.endsWith(".h")
+                || lower.endsWith(".hpp")
+                || lower.endsWith(".swift");
     }
 }

@@ -24,4 +24,11 @@ public record TimelineEvent(
             metadata = Collections.emptyMap();
         }
     }
+
+    public String eventClassification() {
+        if (metadata != null && metadata.containsKey("eventClassification")) {
+            return String.valueOf(metadata.get("eventClassification"));
+        }
+        return isPreFailure ? "PRE_FAILURE" : "POST_FAILURE";
+    }
 }

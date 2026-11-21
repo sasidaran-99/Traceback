@@ -9,9 +9,15 @@ import com.traceback.core.domain.Incident;
 import com.traceback.core.domain.Relationship;
 import com.traceback.core.domain.RelationshipCategory;
 import com.traceback.core.domain.RelationshipType;
+import com.traceback.core.domain.InvestigationEntity;
+import com.traceback.core.domain.EvidenceItemEntity;
+import com.traceback.core.investigation.InvestigationMode;
 import com.traceback.core.repository.EventRepository;
 import com.traceback.core.repository.HypothesisRepository;
 import com.traceback.core.repository.IncidentRepository;
+import com.traceback.core.repository.InvestigationClaimRepository;
+import com.traceback.core.repository.InvestigationEvidenceRepository;
+import com.traceback.core.repository.InvestigationRepository;
 import com.traceback.core.repository.RelationshipRepository;
 import com.zaxxer.hikari.HikariDataSource;
 import org.flywaydb.core.Flyway;
@@ -55,6 +61,20 @@ class PostgreSql16IntegrationTest {
     private DataSource dataSource;
 
     @Autowired
+    private org.springframework.core.env.Environment environment;
+
+    @org.junit.jupiter.api.BeforeEach
+    void verifyDatabaseIsolation() {
+        String dbUrl = environment.getProperty("spring.datasource.url", "");
+        if (dbUrl.toLowerCase().contains("traceback_db")) {
+            throw new IllegalStateException(
+                "CRITICAL SAFETY VIOLATION: Integration tests must NEVER connect to production/active database 'traceback_db'! Current URL=" + dbUrl
+            );
+        }
+        assertThat(dbUrl).contains("traceback_test_db");
+    }
+
+    @Autowired
     private Flyway flyway;
 
     @Autowired
@@ -71,6 +91,15 @@ class PostgreSql16IntegrationTest {
 
     @Autowired
     private HypothesisRepository hypothesisRepository;
+
+    @Autowired(required = false)
+    private InvestigationRepository investigationRepository;
+
+    @Autowired(required = false)
+    private InvestigationEvidenceRepository investigationEvidenceRepository;
+
+    @Autowired(required = false)
+    private InvestigationClaimRepository investigationClaimRepository;
 
     @Autowired
     private PlatformTransactionManager transactionManager;
@@ -102,7 +131,7 @@ class PostgreSql16IntegrationTest {
     @DisplayName("Should apply Flyway migrations and create all core tables with JSONB columns")
     void shouldVerifyFlywaySchemaAndTables() throws Exception {
         assertThat(flyway.info().applied()).isNotEmpty();
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("1");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("5");
 
         List<String> tables = new ArrayList<>();
         try (Connection conn = dataSource.getConnection()) {
@@ -114,7 +143,7 @@ class PostgreSql16IntegrationTest {
             }
         }
 
-        assertThat(tables).contains("events", "incidents", "event_relationships", "hypotheses");
+        assertThat(tables).contains("events", "incidents", "event_relationships", "hypotheses", "investigation_hypotheses");
 
         // Verify JSONB data type in information_schema
         Integer jsonbColumnsCount = jdbcTemplate.queryForObject(
@@ -386,5 +415,66 @@ class PostgreSql16IntegrationTest {
             assertThat(retrieved).isPresent();
             assertThat(retrieved.get().getEntityId()).isEqualTo("persistent-commit-tx");
         });
+    }
+
+    @Test
+    @DisplayName("Should verify V2 investigation persistence tables and indexes exist in PostgreSQL 16")
+    void shouldVerifyV2InvestigationPersistenceSchema() throws Exception {
+        try (Connection conn = dataSource.getConnection()) {
+            DatabaseMetaData metaData = conn.getMetaData();
+            List<String> tables = new ArrayList<>();
+            try (ResultSet rs = metaData.getTables(null, "public", "%", new String[]{"TABLE"})) {
+                while (rs.next()) {
+                    tables.add(rs.getString("TABLE_NAME").toLowerCase());
+                }
+            }
+
+            assertThat(tables).contains(
+                    "investigations",
+                    "investigation_evidence",
+                    "investigation_claims",
+                    "investigation_agent_reports",
+                    "investigation_agent_steps",
+                    "investigation_timeline_events"
+            );
+        }
+    }
+
+    @Test
+    @DisplayName("Should verify durable investigation persistence and JSONB integrity on PostgreSQL 16")
+    void shouldPersistInvestigationWithJsonbOnPostgreSql16() {
+        UUID invId = UUID.randomUUID();
+        try {
+            InvestigationEntity inv = new InvestigationEntity(
+                    invId, InvestigationMode.WORKING_TREE_FORENSICS, "TacitIQ", "prod",
+                    "C:/projects/TacitIQ", "COMPLETED", "79 missing files detected", "CONFIRMED", 0.95, "REP-test123"
+            );
+            investigationRepository.save(inv);
+
+            EvidenceItemEntity evd = new EvidenceItemEntity(
+                    "EVD-PG16-1", invId, "WORKING_TREE_CHANGE", "WORKING_TREE",
+                    "backend/src/App.java", "Missing file",
+                    "{\"relativePath\":\"backend/src/App.java\",\"changeType\":\"MISSING\",\"headSha\":\"d711d65\"}",
+                    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            );
+            investigationEvidenceRepository.save(evd);
+
+            Optional<InvestigationEntity> foundInv = investigationRepository.findById(invId);
+            assertThat(foundInv).isPresent();
+            assertThat(foundInv.get().getMode()).isEqualTo(InvestigationMode.WORKING_TREE_FORENSICS);
+            assertThat(foundInv.get().getVerdict()).isEqualTo("CONFIRMED");
+
+            List<EvidenceItemEntity> foundEvd = investigationEvidenceRepository.findByInvestigationId(invId);
+            assertThat(foundEvd).hasSize(1);
+            assertThat(foundEvd.get(0).getPayload())
+                    .contains("changeType")
+                    .contains("MISSING")
+                    .contains("backend/src/App.java");
+            assertThat(foundEvd.get(0).getIntegrityHash()).hasSize(64);
+        } finally {
+            if (investigationRepository != null) {
+                investigationRepository.deleteById(invId);
+            }
+        }
     }
 }

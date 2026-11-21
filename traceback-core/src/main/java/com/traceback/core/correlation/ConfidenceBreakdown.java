@@ -1,5 +1,7 @@
 package com.traceback.core.correlation;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+
 import java.util.Collections;
 import java.util.List;
 
@@ -7,6 +9,7 @@ import java.util.List;
  * Detailed, transparent breakdown of how a hypothesis confidence score was computed.
  * Follows the deterministic scoring formula: S = T + O + A - C, normalized to [0.0, 1.0].
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record ConfidenceBreakdown(
         double temporalPoints,
         double overlapPoints,

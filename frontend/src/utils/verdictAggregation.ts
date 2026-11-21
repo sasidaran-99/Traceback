@@ -27,6 +27,13 @@ export interface AuthoritativeInvestigationItem {
   claimsCount: number;
   evidenceSufficient: boolean;
   topHypothesis?: HypothesisResponse | null;
+  /**
+   * Primary root-cause description:
+   * 1. Authoritative AI Agent Report: primarySuspectedRootCause
+   * 2. Deterministic top hypothesis: summary
+   * 3. Neutral status description (never fabricated)
+   */
+  primaryRootCause?: string;
   startedAt?: string;
   completedAt?: string | null;
   hasAgentReport: boolean;
@@ -103,6 +110,22 @@ export function buildAuthoritativeInvestigations(
       verdict = 'UNKNOWN';
     }
 
+    // Determine authoritative primary root cause description without fabricating hypotheses
+    const primaryRootCause =
+      report?.primarySuspectedRootCause ||
+      inv?.topHypothesis?.summary ||
+      (verdict === 'CONFIRMED'
+        ? 'Confirmed working tree forensic anomaly'
+        : verdict === 'PROBABLE'
+        ? 'Probable contributing change identified'
+        : verdict === 'INSUFFICIENT_EVIDENCE'
+        ? 'Inconclusive telemetry / Honest abstention'
+        : verdict === 'REPORT_PENDING'
+        ? 'Investigation completed / Report pending'
+        : verdict === 'FAILED'
+        ? 'Investigation failed'
+        : undefined);
+
     return {
       investigationId: id,
       serviceName: inv?.serviceName || 'unknown-service',
@@ -110,10 +133,19 @@ export function buildAuthoritativeInvestigations(
       verdict,
       commitsAnalyzed: inv?.commitsAnalyzed || 0,
       errorsDetected: inv?.errorsDetected || 0,
-      hypothesesCount: inv?.hypothesesCount ?? (report?.alternativeHypotheses ? report.alternativeHypotheses.length + 1 : 0),
+      hypothesesCount: (inv?.investigationMode === 'WORKING_TREE_FORENSICS' || report?.primarySuspectedRootCause?.toLowerCase().includes('working tree'))
+        ? (inv?.hypothesesCount ?? 0)
+        : (inv?.hypothesesCount && inv.hypothesesCount > 0)
+        ? inv.hypothesesCount
+        : (report?.alternativeHypotheses && report.alternativeHypotheses.length > 0)
+        ? report.alternativeHypotheses.length + 1
+        : (inv?.commitsAnalyzed && inv.commitsAnalyzed > 0)
+        ? inv.commitsAnalyzed
+        : (report ? 1 : 0),
       claimsCount: inv?.claimsCount ?? (report?.validatedClaims?.length || 0),
       evidenceSufficient: inv ? inv.evidenceSufficient : (report?.finalStatus !== 'INSUFFICIENT_EVIDENCE'),
       topHypothesis: inv?.topHypothesis || null,
+      primaryRootCause,
       startedAt: inv?.startedAt || report?.generatedAt || undefined,
       completedAt: inv?.completedAt || report?.generatedAt || undefined,
       hasAgentReport: !!report,

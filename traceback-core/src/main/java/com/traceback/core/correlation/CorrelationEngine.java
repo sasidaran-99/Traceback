@@ -8,6 +8,7 @@ import com.traceback.core.domain.HypothesisStatus;
 import com.traceback.core.domain.Incident;
 import com.traceback.core.domain.Relationship;
 import com.traceback.core.domain.RelationshipType;
+import com.traceback.core.evidence.ConcreteEvidenceRegistry;
 import com.traceback.core.evidence.EvidenceItem;
 import com.traceback.core.evidence.EvidenceRegistry;
 import com.traceback.core.evidence.EvidenceType;
@@ -112,11 +113,13 @@ public class CorrelationEngine {
         List<InvestigationClaim> claims = new ArrayList<>();
         List<ScoredCandidate> scoredCandidates = new ArrayList<>();
 
-        Instant failureOnset = determineFailureOnset(logEvidence, parsedStack);
+        Instant failureOnset = determineFailureOnset(logEvidence, parsedStack, incident, commits);
         ParsedException activeException = resolveActiveException(logEvidence, parsedStack);
+        boolean hasWorkingTreeAnomaly = workingTreeSnapshot != null && workingTreeSnapshot.hasMissingTrackedFiles();
+        UUID invId = incident != null ? incident.getId() : null;
 
         String errorLocation = "UnknownErrorLocation";
-        String errorSummary = "Runtime failure";
+        String errorSummary = hasWorkingTreeAnomaly ? "Working tree anomaly: missing tracked files detected" : "Runtime failure";
         if (activeException != null) {
             ParsedException root = activeException.getRootCause();
             errorSummary = root.exceptionType() + ": " + root.message();
@@ -124,6 +127,11 @@ public class CorrelationEngine {
         } else if (logEvidence != null && logEvidence.primaryErrorSignature() != null) {
             errorSummary = logEvidence.primaryErrorSignature().exceptionType() + ": " + logEvidence.primaryErrorSignature().messagePattern();
             errorLocation = logEvidence.primaryErrorSignature().sourceLocation();
+        } else if (hasWorkingTreeAnomaly) {
+            errorSummary = "Working tree anomaly: missing tracked files detected";
+            errorLocation = "WorkingTree";
+        } else {
+            errorSummary = "No observed runtime errors";
         }
 
         // Detect superseded configuration keys across commits in reverse chronological order
@@ -132,7 +140,7 @@ public class CorrelationEngine {
         if (commits != null) {
             // commits are typically newest first; iterate in order
             for (CommitEvidence c : commits) {
-                boolean isPre = failureOnset == null || !c.timestamp().isAfter(failureOnset);
+                boolean isPre = failureOnset == null || c.timestamp() == null || !c.timestamp().isAfter(failureOnset);
                 if (isPre && c.hasConfigurationChanges()) {
                     for (ChangedFile cf : c.changedFiles()) {
                         for (String key : cf.configChanges().keySet()) {
@@ -143,8 +151,6 @@ public class CorrelationEngine {
                 }
             }
         }
-
-        boolean hasWorkingTreeAnomaly = workingTreeSnapshot != null && workingTreeSnapshot.hasMissingTrackedFiles();
 
         if ((commits == null || commits.isEmpty()) && !hasWorkingTreeAnomaly) {
             Hypothesis abstention = buildAbstentionHypothesis(incident, "No candidate commits found within the investigation window.");
@@ -171,11 +177,13 @@ public class CorrelationEngine {
             List<String> matchedRules = new ArrayList<>();
             Map<String, String> ruleMatchReasons = new LinkedHashMap<>();
 
-            boolean isPreFailure = failureOnset == null || !commit.timestamp().isAfter(failureOnset);
-            long minutesBeforeFailure = failureOnset != null
-                    ? Duration.between(commit.timestamp(), failureOnset).toMinutes()
-                    : 0;
+            boolean hasTemporalInfo = failureOnset != null && commit.timestamp() != null;
+            Duration durationToFailure = hasTemporalInfo ? Duration.between(commit.timestamp(), failureOnset) : null;
+            long secondsBeforeFailure = durationToFailure != null ? durationToFailure.getSeconds() : -1;
+            long minutesBeforeFailure = secondsBeforeFailure >= 0 ? secondsBeforeFailure / 60 : -1;
+            boolean isPreFailure = !hasTemporalInfo || !commit.timestamp().isAfter(failureOnset);
 
+            String invStr = incident != null ? incident.getId().toString() : "GLOBAL";
             String gitEvidenceId = "EVD-GIT-" + commit.shortSha();
             evidenceRegistry.registerItem(EvidenceItem.create(
                     gitEvidenceId,
@@ -185,35 +193,98 @@ public class CorrelationEngine {
                     commit.timestamp(),
                     commit.commitMessage(),
                     Map.of("author", commit.authorName(), "files", commit.changedFiles().size(),
-                            "investigationId", incident != null ? incident.getId().toString() : "GLOBAL")
-            ));
+                            "investigationId", invStr, "originatingInvestigationId", invStr)
+            ), invId);
             evidenceIds.add(gitEvidenceId);
+
+            // Register canonical configuration diff evidence whenever commit has config changes
+            if (commit.hasConfigurationChanges()) {
+                String cfgEvdId = ConcreteEvidenceRegistry.configEvidenceId(commit.shortSha());
+                Map<String, Object> allCfgMeta = new HashMap<>();
+                allCfgMeta.put("investigationId", invStr);
+                allCfgMeta.put("originatingInvestigationId", invStr);
+                allCfgMeta.put("commitSha", sha);
+                List<String> files = new ArrayList<>();
+                Map<String, String> mergedChanges = new LinkedHashMap<>();
+                for (ChangedFile cf : commit.changedFiles()) {
+                    if (cf.configChanges() != null && !cf.configChanges().isEmpty()) {
+                        files.add(cf.filePath());
+                        mergedChanges.putAll(cf.configChanges());
+                    }
+                }
+                allCfgMeta.put("configFiles", files);
+                allCfgMeta.put("changes", mergedChanges);
+
+                evidenceRegistry.registerItem(EvidenceItem.create(
+                        cfgEvdId,
+                        EvidenceType.CONFIG_DIFF,
+                        "GIT",
+                        commit.shortSha() + ":config",
+                        commit.timestamp(),
+                        "Configuration delta in commit " + commit.shortSha() + ": " + files + " (" + mergedChanges.keySet() + ")",
+                        allCfgMeta
+                ), invId);
+            }
 
             // ==========================================
             // 1. Term T: Temporal Proximity (0 to 30 pts)
             // ==========================================
             double temporalPoints = 0.0;
-            if (isPreFailure && minutesBeforeFailure >= 0 && minutesBeforeFailure <= windowMinutes) {
-                temporalPoints = 20.0;
-                matchedRules.add("RULE_A_TEMPORAL_PROXIMITY");
-                String reason = "Commit occurred " + minutesBeforeFailure + "m prior to failure onset (within " + windowMinutes + "m window)";
-                if (minutesBeforeFailure <= 15) {
-                    temporalPoints += 10.0;
-                    reason += " [close proximity bonus: +10 pts]";
-                }
-                scoreReasons.add(reason + ": +" + (int) temporalPoints + " pts");
-                ruleMatchReasons.put("RULE_A_TEMPORAL_PROXIMITY", reason);
+            if (!hasTemporalInfo) {
+                temporalPoints = 0.0;
+                matchedRules.add("RULE_A_TEMPORAL_UNAVAILABLE");
+                String reason = "Temporal information unavailable (missing failure timestamp or commit timestamp); assigned neutral baseline: +0 pts";
+                scoreReasons.add(reason);
+                ruleMatchReasons.put("RULE_A_TEMPORAL_UNAVAILABLE", reason);
+            } else if (isPreFailure) {
+                if (secondsBeforeFailure >= 0 && secondsBeforeFailure <= (long) windowMinutes * 60) {
+                    temporalPoints = 20.0;
+                    matchedRules.add("RULE_A_TEMPORAL_PROXIMITY");
+                    String timeStr = formatDuration(secondsBeforeFailure, minutesBeforeFailure);
+                    String reason = "Commit occurred " + timeStr + " prior to failure onset (within " + windowMinutes + "m window)";
+                    if (secondsBeforeFailure <= 15 * 60) {
+                        temporalPoints += 10.0;
+                        reason += " [close proximity bonus: +10 pts]";
+                    }
+                    scoreReasons.add(reason + ": +" + (int) temporalPoints + " pts");
+                    ruleMatchReasons.put("RULE_A_TEMPORAL_PROXIMITY", reason);
 
-                Relationship rel = RelationshipBuilder.buildCommitToErrorRelationship(
-                        commit,
-                        errorLocation,
-                        failureOnset,
-                        RelationshipType.TEMPORAL_PRECEDENCE,
-                        temporalPoints / 85.0,
-                        reason,
-                        "{\"minutesBeforeFailure\":" + minutesBeforeFailure + "}"
-                );
-                relationships.add(rel);
+                    Relationship rel = RelationshipBuilder.buildCommitToErrorRelationship(
+                            commit,
+                            errorLocation,
+                            failureOnset,
+                            RelationshipType.TEMPORAL_PRECEDENCE,
+                            temporalPoints / 85.0,
+                            reason,
+                            "{\"secondsBeforeFailure\":" + secondsBeforeFailure + ",\"minutesBeforeFailure\":" + minutesBeforeFailure + "}"
+                    );
+                    relationships.add(rel);
+                } else if (secondsBeforeFailure >= 0 && secondsBeforeFailure <= (long) windowMinutes * 120) {
+                    temporalPoints = 10.0;
+                    matchedRules.add("RULE_A_TEMPORAL_EXTENDED");
+                    String timeStr = formatDuration(secondsBeforeFailure, minutesBeforeFailure);
+                    String reason = "Commit occurred " + timeStr + " prior to failure onset (extended window " + windowMinutes + "-" + (windowMinutes * 2) + "m)";
+                    scoreReasons.add(reason + ": +10 pts");
+                    ruleMatchReasons.put("RULE_A_TEMPORAL_EXTENDED", reason);
+
+                    Relationship rel = RelationshipBuilder.buildCommitToErrorRelationship(
+                            commit,
+                            errorLocation,
+                            failureOnset,
+                            RelationshipType.TEMPORAL_PRECEDENCE,
+                            temporalPoints / 85.0,
+                            reason,
+                            "{\"secondsBeforeFailure\":" + secondsBeforeFailure + ",\"minutesBeforeFailure\":" + minutesBeforeFailure + "}"
+                    );
+                    relationships.add(rel);
+                } else {
+                    temporalPoints = 0.0;
+                    String timeStr = formatDuration(secondsBeforeFailure, minutesBeforeFailure);
+                    String reason = "Commit occurred " + timeStr + " prior to failure onset (exceeds 2x window of " + (windowMinutes * 2) + "m)";
+                    scoreReasons.add(reason + ": +0 pts");
+                }
+            } else {
+                temporalPoints = 0.0;
             }
 
             // ==========================================
@@ -243,8 +314,8 @@ public class CorrelationEngine {
                                 commit.timestamp(),
                                 "Stack frame " + frame.declaringClass() + "." + frame.methodName() + " matches changed file",
                                 Map.of("file", frame.fileName(), "line", frame.lineNumber(),
-                                        "investigationId", incident != null ? incident.getId().toString() : "GLOBAL")
-                        ));
+                                        "investigationId", invStr, "originatingInvestigationId", invStr)
+                        ), invId);
                         evidenceIds.add(frameEvdId);
 
                         Relationship rel = RelationshipBuilder.buildCommitToErrorRelationship(
@@ -272,7 +343,7 @@ public class CorrelationEngine {
                         boolean matchesTimeout = (key.contains("timeout") || key.contains("hikari") || key.contains("connection"))
                                 && isTimeoutError(errorSummary);
 
-                        boolean matchesDb = (key.contains("datasource") || key.contains("jdbc") || key.contains("port") || key.contains("host") || key.contains("db"))
+                        boolean matchesDb = (key.contains("datasource") || key.contains("jdbc") || key.contains("port") || key.contains("host") || key.contains("db") || key.contains("database"))
                                 && isDatabaseError(errorSummary);
 
                         if (matchesTimeout || matchesDb) {
@@ -299,18 +370,20 @@ public class CorrelationEngine {
                             scoreReasons.add(reason);
                             ruleMatchReasons.put("RULE_C_CONFIG_OVERLAP", reason);
 
-                            String cfgEvdId = "EVD-CFG-" + commit.shortSha() + "-" + Math.abs(key.hashCode());
+                            String cfgEvdId = ConcreteEvidenceRegistry.configEvidenceId(commit.shortSha());
                             evidenceRegistry.registerItem(EvidenceItem.create(
                                     cfgEvdId,
                                     EvidenceType.CONFIG_DIFF,
                                     "GIT",
                                     cf.filePath() + "#" + key,
                                     commit.timestamp(),
-                                    "Config key [" + key + "] changed (" + delta + "), matching failure symptom",
+                                    "Config key [" + key + "] changed (" + delta + "), matching failure symptom: " + errorSummary,
                                     Map.of("key", key, "delta", delta, "error", errorSummary,
-                                            "investigationId", incident != null ? incident.getId().toString() : "GLOBAL")
-                            ));
-                            evidenceIds.add(cfgEvdId);
+                                            "investigationId", invStr, "originatingInvestigationId", invStr)
+                            ), invId);
+                            if (!evidenceIds.contains(cfgEvdId)) {
+                                evidenceIds.add(cfgEvdId);
+                            }
 
                             Relationship rel = RelationshipBuilder.buildCommitToErrorRelationship(
                                     commit,
@@ -373,8 +446,8 @@ public class CorrelationEngine {
                         sha,
                         commit.timestamp(),
                         "Post-failure commit: " + reason,
-                        Map.of("type", "POST_FAILURE", "investigationId", incident != null ? incident.getId().toString() : "GLOBAL")
-                ));
+                        Map.of("type", "POST_FAILURE", "investigationId", invStr, "originatingInvestigationId", invStr)
+                ), invId);
                 contraEvidenceIds.add(contraEvdId);
             }
 
@@ -394,8 +467,8 @@ public class CorrelationEngine {
                         sha,
                         commit.timestamp(),
                         "Cosmetic commit: " + reason,
-                        Map.of("type", "COSMETIC", "investigationId", incident != null ? incident.getId().toString() : "GLOBAL")
-                ));
+                        Map.of("type", "COSMETIC", "investigationId", invStr, "originatingInvestigationId", invStr)
+                ), invId);
                 contraEvidenceIds.add(contraEvdId);
             }
 
@@ -417,8 +490,8 @@ public class CorrelationEngine {
                                 sha,
                                 commit.timestamp(),
                                 reason + "; zero database or stack trace overlap",
-                                Map.of("type", "SUBSYSTEM_CONTRADICTION", "investigationId", incident != null ? incident.getId().toString() : "GLOBAL")
-                        ));
+                                Map.of("type", "SUBSYSTEM_CONTRADICTION", "investigationId", invStr, "originatingInvestigationId", invStr)
+                        ), invId);
                         contraEvidenceIds.add(contraEvdId);
                     }
                 }
@@ -434,6 +507,21 @@ public class CorrelationEngine {
                             String reason = "Configuration change on key [" + key + "] was superseded by a later pre-failure commit (" + activeOwner.substring(0, Math.min(7, activeOwner.length())) + ")";
                             penaltyReasons.add(reason + ": -25 pts");
                             counterEvidence.append(reason).append(". ");
+
+                            String contraEvdId = "EVD-CONTRA-SUPERSEDED-" + commit.shortSha();
+                            evidenceRegistry.registerItem(EvidenceItem.create(
+                                    contraEvdId,
+                                    EvidenceType.CONFIG_DIFF,
+                                    "ANALYSIS",
+                                    commit.shortSha() + ":superseded",
+                                    commit.timestamp(),
+                                    reason,
+                                    Map.of("type", "SUPERSEDED_CONFIG", "key", key, "supersededBy", activeOwner,
+                                            "investigationId", invStr, "originatingInvestigationId", invStr)
+                            ), invId);
+                            if (!contraEvidenceIds.contains(contraEvdId)) {
+                                contraEvidenceIds.add(contraEvdId);
+                            }
                             break;
                         }
                     }
@@ -498,7 +586,7 @@ public class CorrelationEngine {
 
         // Determine if available evidence is sufficient
         boolean evidenceSufficient = scoredCandidates.stream()
-                .anyMatch(c -> c.hasStructuralOverlap() && c.score() >= 0.40);
+                .anyMatch(c -> c.hasStructuralOverlap() && c.score() >= 0.35);
 
         // Generate Hypotheses and Claims
         List<Hypothesis> hypotheses = new ArrayList<>();
@@ -623,10 +711,15 @@ public class CorrelationEngine {
                     .map(WorkingTreeEvidence::evidenceId)
                     .toList();
 
-            ConfidenceBreakdown wtBreakdown = ConfidenceBreakdown.calculate(
+            ConfidenceBreakdown wtBreakdown = new ConfidenceBreakdown(
                     30.0, 30.0, 25.0, 0.0,
-                    List.of("RULE_WT_MISSING_TRACKED_FILES: Working tree anomaly with missing tracked files"),
-                    Collections.emptyList()
+                    85.0, 0.85,
+                    List.of(
+                            "Filesystem Discrepancy: " + missingCount + " tracked files physically missing from working directory (+30 pts)",
+                            "Git HEAD Tree Comparison: Missing files confirmed present in HEAD tree " + shortHead + " (+30 pts)",
+                            "Git History Corroboration: No committed deletions exist in repository history (+25 pts)"
+                    ),
+                    List.of("Causal Process Uncertainty: OS-level process deletion event is not confirmed in audit logs (normalized score capped at 0.85)")
             );
 
             String rankingExplanation = String.format(
@@ -686,9 +779,12 @@ public class CorrelationEngine {
 
         // If evidence is insufficient across all candidates, prepend/provide an explicit abstention hypothesis
         if (!evidenceSufficient && !commits.isEmpty()) {
+            String abstentionReason = (activeException == null && (logEvidence == null || logEvidence.primaryErrorSignature() == null))
+                    ? "Available telemetry contains no observed runtime errors or working-tree anomalies. No candidate commit can be verified as root cause."
+                    : "Available telemetry does not contain code or configuration changes corresponding to the observed failure (" + errorSummary + "). No candidate commit can be verified as root cause.";
             Hypothesis abstentionHypothesis = buildAbstentionHypothesis(
                     incident,
-                    "INSUFFICIENT_EVIDENCE: Available telemetry does not contain code or configuration changes corresponding to the observed failure (" + errorSummary + "). No candidate commit can be verified as root cause."
+                    "INSUFFICIENT_EVIDENCE: " + abstentionReason
             );
             hypotheses.add(0, abstentionHypothesis);
         }
@@ -744,22 +840,52 @@ public class CorrelationEngine {
         }
     }
 
+    private static final java.util.regex.Pattern NUMERIC_SIGNAL_PATTERN = java.util.regex.Pattern.compile("\\b(\\d{3,6})\\b");
+
     private boolean deltaContainsErrorSignal(String delta, String errorSummary) {
         if (delta == null || errorSummary == null) return false;
         String deltaLower = delta.toLowerCase(Locale.ROOT);
         String errorLower = errorSummary.toLowerCase(Locale.ROOT);
 
-        // e.g. delta contains "3000" and error contains "3000ms"
-        if (deltaLower.contains("3000") && errorLower.contains("3000ms")) return true;
-        if (deltaLower.contains("5433") && errorLower.contains("5433")) return true;
+        // If delta has "=>", inspect the new value side
+        String targetText = deltaLower;
+        int arrow = deltaLower.indexOf("=>");
+        if (arrow >= 0 && arrow + 2 < deltaLower.length()) {
+            targetText = deltaLower.substring(arrow + 2).trim();
+        }
+
+        java.util.regex.Matcher matcher = NUMERIC_SIGNAL_PATTERN.matcher(targetText);
+        while (matcher.find()) {
+            String token = matcher.group(1);
+            if (errorLower.contains(token)) {
+                return true;
+            }
+        }
         return false;
     }
 
-    private Instant determineFailureOnset(LogEvidence logEvidence, ParsedException parsedStack) {
+    private Instant determineFailureOnset(LogEvidence logEvidence, ParsedException parsedStack, Incident incident, List<CommitEvidence> commits) {
         if (logEvidence != null && logEvidence.firstObservedFailure() != null) {
             return logEvidence.firstObservedFailure();
         }
+        if (incident != null && incident.getStartedAt() != null) {
+            // Check if incident startedAt is a plausible failure timestamp relative to the candidate commits
+            // (i.e. at least one commit occurred prior to or at incident start)
+            if (commits == null || commits.isEmpty() || commits.stream().anyMatch(c -> c.timestamp() != null && !c.timestamp().isAfter(incident.getStartedAt()))) {
+                return incident.getStartedAt();
+            }
+        }
         return null;
+    }
+
+    private String formatDuration(long seconds, long minutes) {
+        if (seconds < 60) {
+            return seconds + "s";
+        } else if (seconds % 60 == 0) {
+            return minutes + "m";
+        } else {
+            return minutes + "m " + (seconds % 60) + "s";
+        }
     }
 
     private ParsedException resolveActiveException(LogEvidence logEvidence, ParsedException parsedStack) {
@@ -787,7 +913,15 @@ public class CorrelationEngine {
                 || lower.contains("connection refused")
                 || lower.contains("cannotcreatetransactionexception")
                 || lower.contains("sqltimeoutexception")
-                || lower.contains("database");
+                || lower.contains("database")
+                || lower.contains("operationalerror")
+                || lower.contains("databaseerror")
+                || lower.contains("sequelizeconnectionerror")
+                || lower.contains("econnrefused")
+                || lower.contains("redis")
+                || lower.contains("mongo")
+                || lower.contains("postgres")
+                || lower.contains("mysql");
     }
 
     private record ScoredCandidate(

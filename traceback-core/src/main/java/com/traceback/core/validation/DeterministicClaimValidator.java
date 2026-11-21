@@ -29,12 +29,14 @@ public class DeterministicClaimValidator implements ClaimValidator {
             throw new IllegalArgumentException("Cannot validate null claim");
         }
 
+        UUID targetInvestigationId = activeInvestigationId != null ? activeInvestigationId : claim.investigationId();
+
         List<String> supportingIds = claim.supportingEvidenceIds();
 
         // 1. Check for missing evidence IDs
         if (supportingIds == null || supportingIds.isEmpty()) {
             return claim.withValidation(
-                    ClaimValidationStatus.UNSUPPORTED,
+                    ClaimValidationStatus.VALIDATION_ERROR,
                     "Validation failed: Claim cites zero supporting evidence IDs."
             );
         }
@@ -44,38 +46,67 @@ public class DeterministicClaimValidator implements ClaimValidator {
         for (String evdId : supportingIds) {
             if (evdId == null || evdId.isBlank()) {
                 return claim.withValidation(
-                        ClaimValidationStatus.UNSUPPORTED,
+                        ClaimValidationStatus.VALIDATION_ERROR,
                         "Validation failed: Claim contains blank or null evidence ID."
                 );
             }
 
-            Optional<EvidenceItem> itemOpt = registry.findItemById(evdId);
+            Optional<EvidenceItem> itemOpt = targetInvestigationId != null
+                    ? registry.findItemById(evdId, targetInvestigationId)
+                    : registry.findItemById(evdId);
+
             if (itemOpt.isEmpty()) {
+                // If not found in target scope, check if it belongs to another investigation
+                Optional<EvidenceItem> foreignOpt = registry.findItemById(evdId);
+                if (foreignOpt.isPresent()) {
+                    Object foreignInv = foreignOpt.get().metadata().get("investigationId");
+                    if (foreignInv != null && targetInvestigationId != null &&
+                            !foreignInv.toString().equalsIgnoreCase(targetInvestigationId.toString()) &&
+                            !"GLOBAL".equalsIgnoreCase(foreignInv.toString())) {
+                        return claim.withValidation(
+                                ClaimValidationStatus.VALIDATION_ERROR,
+                                "Validation failed: Evidence ID '" + evdId + "' belongs to a different investigation (" +
+                                        foreignInv + ") rather than active investigation (" + targetInvestigationId + ")."
+                        );
+                    }
+                }
                 return claim.withValidation(
-                        ClaimValidationStatus.UNSUPPORTED,
+                        ClaimValidationStatus.VALIDATION_ERROR,
                         "Validation failed: Supporting evidence ID '" + evdId + "' was not found in the active evidence registry."
                 );
             }
 
             EvidenceItem item = itemOpt.get();
 
-            // Check multi-tenant / investigation boundary isolation
+            // 1. Check multi-tenant / investigation boundary isolation (authoritative ownership)
             Object foreignInv = item.metadata().get("investigationId");
-            if (foreignInv != null && activeInvestigationId != null) {
+            if (foreignInv != null && targetInvestigationId != null) {
                 String foreignStr = foreignInv.toString();
-                if (!foreignStr.equalsIgnoreCase(activeInvestigationId.toString()) && !"GLOBAL".equalsIgnoreCase(foreignStr)) {
+                if (!foreignStr.equalsIgnoreCase(targetInvestigationId.toString()) && !"GLOBAL".equalsIgnoreCase(foreignStr)) {
                     return claim.withValidation(
-                            ClaimValidationStatus.UNSUPPORTED,
+                            ClaimValidationStatus.VALIDATION_ERROR,
                             "Validation failed: Evidence ID '" + evdId + "' belongs to a different investigation (" +
-                                    foreignStr + ") rather than active investigation (" + activeInvestigationId + ")."
+                                    foreignStr + ") rather than active investigation (" + targetInvestigationId + ")."
                     );
                 }
+            }
+
+            // 2. Check collection provenance: evidence must be genuinely collected for this investigation,
+            // not copied/leaked from another investigation without independent regeneration
+            UUID origInv = item.originatingInvestigationId();
+            if (origInv != null && targetInvestigationId != null && !targetInvestigationId.equals(origInv)
+                    && !"GLOBAL".equalsIgnoreCase(String.valueOf(item.metadata().get("originatingInvestigationId")))) {
+                return claim.withValidation(
+                        ClaimValidationStatus.VALIDATION_ERROR,
+                        "Validation failed: Evidence ID '" + evdId + "' originated from a different investigation (" +
+                                origInv + ") rather than active investigation (" + targetInvestigationId + ")."
+                );
             }
 
             // Verify cryptographic SHA-256 integrity hash
             if (!verifyEvidenceIntegrity(item)) {
                 return claim.withValidation(
-                        ClaimValidationStatus.UNSUPPORTED,
+                        ClaimValidationStatus.VALIDATION_ERROR,
                         "Validation failed: Evidence ID '" + evdId + "' failed cryptographic SHA-256 integrity checksum (tampered or corrupted content)."
                 );
             }
@@ -88,7 +119,12 @@ public class DeterministicClaimValidator implements ClaimValidator {
         List<EvidenceItem> contradictingItems = new ArrayList<>();
         if (contradictingIds != null && !contradictingIds.isEmpty()) {
             for (String cId : contradictingIds) {
-                registry.findItemById(cId).ifPresent(contradictingItems::add);
+                if (cId != null && !cId.isBlank()) {
+                    Optional<EvidenceItem> cItemOpt = targetInvestigationId != null
+                            ? registry.findItemById(cId, targetInvestigationId)
+                            : registry.findItemById(cId);
+                    cItemOpt.ifPresent(contradictingItems::add);
+                }
             }
         }
 
@@ -96,7 +132,8 @@ public class DeterministicClaimValidator implements ClaimValidator {
             boolean directRefutation = contradictingItems.stream().anyMatch(item ->
                     item.summary().toLowerCase(Locale.ROOT).contains("post-failure") ||
                     item.summary().toLowerCase(Locale.ROOT).contains("zero database or stack trace overlap") ||
-                    item.summary().toLowerCase(Locale.ROOT).contains("cosmetic only")
+                    item.summary().toLowerCase(Locale.ROOT).contains("cosmetic") ||
+                    item.summary().toLowerCase(Locale.ROOT).contains("superseded")
             );
 
             if (directRefutation) {
@@ -123,18 +160,28 @@ public class DeterministicClaimValidator implements ClaimValidator {
 
         // If logical support passed, but non-fatal contradictions exist, mark partially supported
         if (!contradictingItems.isEmpty()) {
+            StringBuilder contraSummary = new StringBuilder();
+            for (EvidenceItem cItem : contradictingItems) {
+                contraSummary.append("[").append(cItem.evidenceId()).append("]: ").append(cItem.summary()).append("; ");
+            }
             return claim.withValidation(
                     ClaimValidationStatus.PARTIALLY_SUPPORTED,
                     "Claim has supporting evidence, but is dampened by " + contradictingItems.size() +
-                            " contradictory evidence observation(s)."
+                            " contradictory evidence observation(s): " + contraSummary.toString().trim()
             );
         }
 
         // 6. Fully supported claim
+        boolean isWorkingTreeObservation = claimLower.contains("working tree")
+                && (claimLower.contains("missing") || claimLower.contains("absent") || claimLower.contains("disappear"));
+        String substantiationNote = isWorkingTreeObservation
+                ? " (forensically verified observation; deletion process remains unestablished)."
+                : " (causally substantiated).";
+
         return claim.withValidation(
                 ClaimValidationStatus.SUPPORTED,
                 "Claim successfully validated: Supported by " + supportingItems.size() +
-                        " verified evidence item(s) with confirmed integrity hashes."
+                        " verified evidence item(s) with confirmed integrity hashes" + substantiationNote
         );
     }
 
@@ -145,12 +192,46 @@ public class DeterministicClaimValidator implements ClaimValidator {
         }
 
         String rawPayload = item.evidenceId() + "|" + item.source() + "|" + item.originalReference() + "|" + item.summary();
-        String expectedHash = computeHash(rawPayload);
+        String fullSha256 = computeFullSha256(rawPayload);
+        String legacyTruncated = fullSha256.length() >= 16 ? fullSha256.substring(0, 16) : fullSha256;
 
-        return expectedHash.equalsIgnoreCase(item.integrityHash());
+        if (item.integrityHash().length() == 64) {
+            return fullSha256.equalsIgnoreCase(item.integrityHash());
+        } else if (item.integrityHash().length() == 16) {
+            return legacyTruncated.equalsIgnoreCase(item.integrityHash());
+        }
+        return false;
     }
 
     private ValidationSupportResult checkLogicalSupport(String claimStatement, List<EvidenceItem> items) {
+        // 0. Reject causal claims citing cosmetic commits or commits with zero heuristic confidence
+        boolean assertsCausality = claimStatement.contains("root cause")
+                || claimStatement.contains("contributing")
+                || claimStatement.contains("caused")
+                || claimStatement.contains("triggered")
+                || claimStatement.contains("responsible");
+
+        if (assertsCausality) {
+            for (EvidenceItem item : items) {
+                String summaryLower = item.summary() != null ? item.summary().toLowerCase(Locale.ROOT) : "";
+                if (summaryLower.contains("cosmetic")
+                        || Boolean.TRUE.equals(item.metadata().get("isCosmetic"))
+                        || "true".equalsIgnoreCase(String.valueOf(item.metadata().get("cosmetic")))) {
+                    return new ValidationSupportResult(false,
+                            "Claim asserts causal responsibility, but cited commit [" + item.evidenceId() + "] is cosmetic with zero functional impact.");
+                }
+                if (item.metadata().containsKey("confidence")) {
+                    try {
+                        double conf = Double.parseDouble(String.valueOf(item.metadata().get("confidence")));
+                        if (conf <= 0.0) {
+                            return new ValidationSupportResult(false,
+                                    "Claim asserts causal responsibility, but cited evidence [" + item.evidenceId() + "] has 0% heuristic correlation confidence.");
+                        }
+                    } catch (NumberFormatException ignored) {}
+                }
+            }
+        }
+
         // 1. Reject claims that confuse working-tree deletions with committed deletions
         boolean assertsCommittedDeletion = (claimStatement.matches(".*\\bcommitted\\s+deletion\\b.*")
                 || (claimStatement.matches(".*\\bcommit\\b.*") && claimStatement.matches(".*\\b(deleted|deletion)\\b.*")))
@@ -171,7 +252,7 @@ public class DeterministicClaimValidator implements ClaimValidator {
         }
 
         // 2. Reject claims asserting an unverified deletion process without system audit evidence
-        boolean assertsDeletionProcess = claimStatement.matches(".*\\b(onedrive|antivirus|defender|ide|user\\s+deleted|rm\\s+-rf|external\\s+sync|sync\\s+client)\\b.*");
+        boolean assertsDeletionProcess = claimStatement.matches(".*\\b(onedrive|antivirus|defender|ide|user\\s+deleted|rm\\s+-rf|external\\s+sync|sync\\s+client|process\\s+deleted|deletion\\s+process)\\b.*");
 
         if (assertsDeletionProcess) {
             boolean hasSystemAuditEvidence = items.stream().anyMatch(i ->
@@ -180,7 +261,7 @@ public class DeterministicClaimValidator implements ClaimValidator {
             );
             if (!hasSystemAuditEvidence) {
                 return new ValidationSupportResult(false,
-                        "Claim asserts specific deletion process without corroborating system audit log or OS process tracking evidence.");
+                        "Claim asserts specific deletion process without corroborating system audit log or OS process tracking evidence. Physical absence proves files are missing from disk, but not which process deleted them.");
             }
         }
 
@@ -199,7 +280,7 @@ public class DeterministicClaimValidator implements ClaimValidator {
         }
 
         // If claim asserts code regression / crash in a file (and is not an uncommitted working tree claim)
-        if (!assertsWorkingTreeMissing && (claimStatement.contains("code regression") || claimStatement.contains("stack frame") || claimStatement.contains(".java"))) {
+        if (!assertsWorkingTreeMissing && (claimStatement.contains("code regression") || claimStatement.contains("stack frame") || claimStatement.contains(".java") || claimStatement.contains(".js") || claimStatement.contains(".py") || claimStatement.contains(".ts"))) {
             boolean hasCodeOrStackEvidence = items.stream().anyMatch(i ->
                     i.evidenceType() == EvidenceType.STACK_FRAME ||
                     i.evidenceType() == EvidenceType.COMMIT_DIFF ||
@@ -211,12 +292,14 @@ public class DeterministicClaimValidator implements ClaimValidator {
         }
 
         // If claim asserts configuration failure (and is not an uncommitted working tree claim)
-        if (!assertsWorkingTreeMissing && (claimStatement.contains("config") || claimStatement.contains("timeout") || claimStatement.contains("connection"))) {
+        if (!assertsWorkingTreeMissing && (claimStatement.contains("config") || claimStatement.contains("timeout") || claimStatement.contains("connection") || claimStatement.contains("pool"))) {
             boolean hasConfigOrTimeoutEvidence = items.stream().anyMatch(i ->
                     i.evidenceType() == EvidenceType.CONFIG_DIFF ||
                     i.evidenceType() == EvidenceType.ERROR_SIGNATURE ||
-                    (i.metadata().containsKey("key") && i.metadata().get("key").toString().contains("timeout")) ||
-                    (i.metadata().containsKey("signature") && i.metadata().get("signature").toString().contains("Timeout"))
+                    (i.metadata().containsKey("key") && i.metadata().get("key").toString().toLowerCase().contains("timeout")) ||
+                    (i.metadata().containsKey("key") && i.metadata().get("key").toString().toLowerCase().contains("connection")) ||
+                    (i.metadata().containsKey("key") && i.metadata().get("key").toString().toLowerCase().contains("pool")) ||
+                    (i.metadata().containsKey("signature") && i.metadata().get("signature").toString().toLowerCase().contains("timeout"))
             );
             if (!hasConfigOrTimeoutEvidence) {
                 return new ValidationSupportResult(false, "Claim asserts configuration root cause, but cited evidence lacks configuration delta or error signature matches.");
@@ -226,14 +309,19 @@ public class DeterministicClaimValidator implements ClaimValidator {
         return new ValidationSupportResult(true, "Supported");
     }
 
-    private static String computeHash(String input) {
+    private static String computeFullSha256(String input) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             byte[] hash = digest.digest(input.getBytes(StandardCharsets.UTF_8));
-            return HexFormat.of().formatHex(hash).substring(0, 16);
+            return HexFormat.of().formatHex(hash);
         } catch (NoSuchAlgorithmException e) {
             return Integer.toHexString(input.hashCode());
         }
+    }
+
+    private static String computeHash(String input) {
+        String full = computeFullSha256(input);
+        return full.length() >= 16 ? full.substring(0, 16) : full;
     }
 
     private record ValidationSupportResult(boolean isSupported, String reason) {}

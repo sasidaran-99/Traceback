@@ -17,13 +17,18 @@ public enum ClaimValidationStatus {
     PARTIALLY_SUPPORTED,
 
     /**
-     * The claim lacks supporting evidence, cites nonexistent/tampered evidence,
-     * or cites evidence that does not logically support the conclusion.
+     * The claim lacks supporting evidence or cites evidence that does not logically support the conclusion.
      */
     UNSUPPORTED,
 
     /**
      * The claim is directly refuted by verifiable counter-evidence.
      */
-    CONTRADICTED
+    CONTRADICTED,
+
+    /**
+     * The claim cannot be evaluated because an evidence reference is missing, corrupt,
+     * tampered, or violates investigation ownership boundaries.
+     */
+    VALIDATION_ERROR
 }

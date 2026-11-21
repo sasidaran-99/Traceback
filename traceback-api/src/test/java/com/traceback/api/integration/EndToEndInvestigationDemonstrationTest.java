@@ -213,10 +213,11 @@ class EndToEndInvestigationDemonstrationTest {
         assertThat(topHypothesis.getSummary()).contains(rootCauseSha.substring(0, 7));
         assertThat(topHypothesis.getConfidenceScore()).isGreaterThanOrEqualTo(0.85);
 
-        // Verify cryptographic evidence hashes (16-character SHA-256 prefix hex)
+        // Verify cryptographic evidence hashes (Full 64-character SHA-256 hex or legacy 16-character prefix)
         assertThat(invResult.evidenceItems()).isNotEmpty();
         for (EvidenceItem item : invResult.evidenceItems()) {
-            assertThat(item.integrityHash()).isNotEmpty().hasSize(16);
+            assertThat(item.integrityHash()).isNotEmpty();
+            assertThat(item.integrityHash().length()).isIn(16, 64);
         }
 
         // --- 6. Trigger AI Agent Investigation via POST /api/investigations/agent ---

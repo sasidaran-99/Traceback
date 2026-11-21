@@ -61,12 +61,6 @@ public class GitCommitAnalyzer {
     }
 
     private boolean isCodePath(String path) {
-        if (path == null) return false;
-        String lower = path.toLowerCase();
-        return lower.endsWith(".java")
-                || lower.endsWith(".kt")
-                || lower.endsWith(".groovy")
-                || lower.endsWith(".ts")
-                || lower.endsWith(".js");
+        return ChangedFile.isSourceCodePath(path);
     }
 }

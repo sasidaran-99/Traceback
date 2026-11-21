@@ -1,6 +1,7 @@
 package com.traceback.core.git.workingtree;
 
 import com.traceback.core.git.GitCollector;
+import com.traceback.core.git.GitRepositorySafetyValidator;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.Status;
 import org.eclipse.jgit.lib.Constants;
@@ -14,6 +15,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Component;
 
 import java.io.File;
@@ -40,30 +42,36 @@ public class GitWorkingTreeCollector {
     private final List<Path> allowedRoots;
 
     public GitWorkingTreeCollector() {
-        this(new GitCollector(), (List<String>) null);
+        this(new GitCollector(), (List<String>) null, false);
     }
 
     @Autowired
     public GitWorkingTreeCollector(
             GitCollector gitCollector,
-            @Value("${traceback.security.allowed-repo-roots:}") String allowedRootsConfig
+            @Value("${traceback.security.allowed-repo-roots:}") String allowedRootsConfig,
+            @Autowired(required = false) Environment env
     ) {
-        this(gitCollector, parseRoots(allowedRootsConfig));
+        this(gitCollector, parseRoots(allowedRootsConfig), GitRepositorySafetyValidator.isProduction(env));
     }
 
     public GitWorkingTreeCollector(GitCollector gitCollector, List<String> allowedRoots) {
-        this.gitCollector = gitCollector != null ? gitCollector : new GitCollector();
-        this.allowedRoots = new ArrayList<>();
+        this(gitCollector, allowedRoots, GitRepositorySafetyValidator.isProduction(null));
+    }
+
+    public GitWorkingTreeCollector(GitCollector gitCollector, List<String> allowedRoots, boolean isProd) {
         if (allowedRoots != null && !allowedRoots.isEmpty()) {
-            for (String r : allowedRoots) {
-                addRoot(Path.of(r));
+            this.allowedRoots = GitRepositorySafetyValidator.initializeAllowedRoots(allowedRoots, isProd);
+        } else if (gitCollector != null && !gitCollector.getAllowedRoots().isEmpty()) {
+            if (isProd) {
+                this.allowedRoots = GitRepositorySafetyValidator.initializeAllowedRoots(
+                        gitCollector.getAllowedRoots().stream().map(Path::toString).toList(), true);
+            } else {
+                this.allowedRoots = new ArrayList<>(gitCollector.getAllowedRoots());
             }
-        } else if (this.gitCollector != null && !this.gitCollector.getAllowedRoots().isEmpty()) {
-            this.allowedRoots.addAll(this.gitCollector.getAllowedRoots());
         } else {
-            addRoot(Path.of("."));
-            addRoot(Path.of(System.getProperty("java.io.tmpdir")));
+            this.allowedRoots = GitRepositorySafetyValidator.initializeAllowedRoots(Collections.emptyList(), isProd);
         }
+        this.gitCollector = gitCollector != null ? gitCollector : (isProd ? null : new GitCollector());
     }
 
     private static List<String> parseRoots(String config) {
@@ -81,31 +89,12 @@ public class GitWorkingTreeCollector {
         return list;
     }
 
-    private void addRoot(Path path) {
-        Path norm = path.toAbsolutePath().normalize();
-        if (!this.allowedRoots.contains(norm)) {
-            this.allowedRoots.add(norm);
-        }
-        try {
-            Path real = norm.toRealPath();
-            if (!this.allowedRoots.contains(real)) {
-                this.allowedRoots.add(real);
-            }
-        } catch (IOException ignored) {
-        }
+    public List<Path> getAllowedRoots() {
+        return Collections.unmodifiableList(allowedRoots);
     }
 
     public boolean isPathAuthorized(Path path) {
-        if (allowedRoots.isEmpty()) {
-            return false;
-        }
-        Path normalized = path.toAbsolutePath().normalize();
-        for (Path root : allowedRoots) {
-            if (normalized.equals(root) || normalized.startsWith(root)) {
-                return true;
-            }
-        }
-        return false;
+        return GitRepositorySafetyValidator.isPathAuthorized(path, allowedRoots);
     }
 
     /**
@@ -113,41 +102,7 @@ public class GitWorkingTreeCollector {
      * and contains a valid Git repository without following symlink escapes.
      */
     public Path validateRepositoryPath(String repositoryPath) {
-        if (gitCollector != null) {
-            try {
-                return gitCollector.validateRepositoryPath(repositoryPath);
-            } catch (Exception e) {
-                // If gitCollector doesn't have it authorized, check our own allowed roots
-                Path realPath;
-                try {
-                    realPath = Path.of(repositoryPath).toRealPath();
-                } catch (IOException ex) {
-                    Path raw = Path.of(repositoryPath).toAbsolutePath().normalize();
-                    if (!isPathAuthorized(raw)) {
-                        log.warn("Access denied: Repository path {} is outside authorized roots", repositoryPath);
-                        throw new SecurityException("Access denied: Repository path is not within the authorized repository roots");
-                    }
-                    throw new IllegalArgumentException("Repository path does not exist or is inaccessible");
-                }
-
-                if (!isPathAuthorized(realPath)) {
-                    log.warn("Access denied: Resolved real path {} is outside authorized roots", realPath);
-                    throw new SecurityException("Access denied: Repository path is not within the authorized repository roots");
-                }
-
-                if (!Files.isDirectory(realPath)) {
-                    throw new IllegalArgumentException("Repository path is not a directory");
-                }
-
-                Path gitDir = realPath.resolve(".git");
-                if (!Files.exists(gitDir)) {
-                    throw new IllegalArgumentException("Directory is not a Git repository (missing .git directory)");
-                }
-
-                return realPath;
-            }
-        }
-        throw new IllegalStateException("GitCollector is not initialized");
+        return GitRepositorySafetyValidator.validateRepositoryPath(repositoryPath, allowedRoots);
     }
 
     /**
@@ -162,8 +117,8 @@ public class GitWorkingTreeCollector {
         List<WorkingTreeEvidence> evidenceList = new ArrayList<>();
         String headSha = "UNKNOWN";
 
-        try (Git git = Git.open(repoPath.toFile())) {
-            Repository repo = git.getRepository();
+        try (Repository repo = GitRepositorySafetyValidator.openRepositorySafely(repoPath, allowedRoots);
+             Git git = new Git(repo)) {
             ObjectId headId = repo.resolve(Constants.HEAD);
             RevTree headTree = null;
             if (headId != null) {
@@ -235,6 +190,8 @@ public class GitWorkingTreeCollector {
 
             return new WorkingTreeSnapshot(repoPath.toString(), headSha, observedAt, evidenceList);
 
+        } catch (SecurityException | IllegalArgumentException e) {
+            throw e;
         } catch (IOException e) {
             log.error("Failed to inspect working tree for repository at {}", repoPath, e);
             throw new RuntimeException("Failed to inspect working tree: " + e.getMessage(), e);

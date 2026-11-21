@@ -4,8 +4,10 @@ import com.traceback.api.dto.HypothesisResponse;
 import com.traceback.api.dto.InvestigationRequest;
 import com.traceback.api.dto.InvestigationResponse;
 import com.traceback.core.evidence.EvidenceItem;
+import com.traceback.core.investigation.InvestigationMode;
 import com.traceback.core.investigation.InvestigationResult;
 import com.traceback.core.investigation.InvestigationService;
+import com.traceback.core.logging.InvestigationLoggingContext;
 import com.traceback.core.timeline.TimelineEvent;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
@@ -30,9 +32,12 @@ import java.util.UUID;
 public class InvestigationController {
 
     private final InvestigationService investigationService;
+    private final com.traceback.core.evidence.EvidenceRegistry evidenceRegistry;
 
-    public InvestigationController(InvestigationService investigationService) {
+    public InvestigationController(InvestigationService investigationService,
+                                   com.traceback.core.evidence.EvidenceRegistry evidenceRegistry) {
         this.investigationService = investigationService;
+        this.evidenceRegistry = evidenceRegistry;
     }
 
     /**
@@ -41,23 +46,54 @@ public class InvestigationController {
      */
     @PostMapping({ "", "/analyze" })
     public ResponseEntity<InvestigationResponse> createInvestigation(@Valid @RequestBody InvestigationRequest request) {
-        InvestigationResult result = investigationService.startInvestigation(
-                request.repositoryPath(),
-                request.stackTrace(),
-                request.logFilePath(),
-                request.logContent(),
-                request.serviceName(),
-                request.environment(),
-                request.windowMinutes() != null ? request.windowMinutes() : 60,
-                request.maxCommits() != null ? request.maxCommits() : 50
-        );
+        validateRequest(request);
+
+        com.traceback.core.investigation.InvestigationDeduplicator.DeduplicationOutcome<InvestigationResult> outcome =
+                investigationService.startInvestigationWithOutcome(
+                        request.repositoryPath(),
+                        request.stackTrace(),
+                        request.logFilePath(),
+                        request.logContent(),
+                        request.serviceName(),
+                        request.environment(),
+                        request.windowMinutes() != null ? request.windowMinutes() : 60,
+                        request.maxCommits() != null ? request.maxCommits() : 50,
+                        request.resolvedMode(),
+                        request.isForceNew()
+                );
+
+        InvestigationResult result = outcome.value();
 
         URI location = ServletUriComponentsBuilder.fromCurrentRequest()
                 .path("/{id}")
                 .buildAndExpand(result.investigationId())
                 .toUri();
 
-        return ResponseEntity.created(location).body(InvestigationResponse.fromResult(result));
+        try (var ignored = InvestigationLoggingContext.withInvestigationId(result.investigationId())) {
+            return ResponseEntity.created(location)
+                    .header("X-TraceBack-Deduplicated", String.valueOf(outcome.deduplicated()))
+                    .header("X-TraceBack-Investigation-Id", result.investigationId().toString())
+                    .body(InvestigationResponse.fromResult(result));
+        }
+    }
+
+    private void validateRequest(InvestigationRequest request) {
+        InvestigationMode mode = request.resolvedMode();
+        if (mode == InvestigationMode.WORKING_TREE_FORENSICS) {
+            if (request.serviceName() == null || request.serviceName().isBlank()) {
+                throw new IllegalArgumentException("serviceName cannot be blank in WORKING_TREE_FORENSICS mode");
+            }
+            if (request.environment() == null || request.environment().isBlank()) {
+                throw new IllegalArgumentException("environment cannot be blank in WORKING_TREE_FORENSICS mode");
+            }
+        } else if (request.investigationMode() == InvestigationMode.RUNTIME_FAILURE) {
+            boolean hasLogs = (request.logContent() != null && !request.logContent().isBlank())
+                    || (request.logFilePath() != null && !request.logFilePath().isBlank());
+            boolean hasStack = request.stackTrace() != null && !request.stackTrace().isBlank();
+            if (!hasLogs && !hasStack) {
+                throw new IllegalArgumentException("Please provide either log content or a stack trace for runtime failure investigations.");
+            }
+        }
     }
 
     /**
@@ -76,10 +112,12 @@ public class InvestigationController {
      */
     @GetMapping("/{id}")
     public ResponseEntity<InvestigationResponse> getInvestigation(@PathVariable UUID id) {
-        return investigationService.getInvestigation(id)
-                .map(InvestigationResponse::fromResult)
-                .map(ResponseEntity::ok)
-                .orElse(ResponseEntity.notFound().build());
+        try (var ignored = InvestigationLoggingContext.withInvestigationId(id)) {
+            return investigationService.getInvestigation(id)
+                    .map(InvestigationResponse::fromResult)
+                    .map(ResponseEntity::ok)
+                    .orElse(ResponseEntity.notFound().build());
+        }
     }
 
     /**
@@ -87,9 +125,11 @@ public class InvestigationController {
      */
     @GetMapping("/{id}/timeline")
     public ResponseEntity<List<TimelineEvent>> getTimeline(@PathVariable UUID id) {
-        return investigationService.getInvestigation(id)
-                .map(res -> ResponseEntity.ok(res.timeline()))
-                .orElse(ResponseEntity.notFound().build());
+        try (var ignored = InvestigationLoggingContext.withInvestigationId(id)) {
+            return investigationService.getInvestigation(id)
+                    .map(res -> ResponseEntity.ok(res.timeline()))
+                    .orElse(ResponseEntity.notFound().build());
+        }
     }
 
     /**
@@ -97,9 +137,25 @@ public class InvestigationController {
      */
     @GetMapping("/{id}/evidence")
     public ResponseEntity<List<EvidenceItem>> getEvidence(@PathVariable UUID id) {
-        return investigationService.getInvestigation(id)
-                .map(res -> ResponseEntity.ok(res.evidenceItems()))
-                .orElse(ResponseEntity.notFound().build());
+        try (var ignored = InvestigationLoggingContext.withInvestigationId(id)) {
+            List<EvidenceItem> items = investigationService.getEvidence(id);
+            if (items.isEmpty() && investigationService.getInvestigation(id).isEmpty()) {
+                return ResponseEntity.notFound().build();
+            }
+            return ResponseEntity.ok(items);
+        }
+    }
+
+    /**
+     * Retrieves a single investigation-scoped evidence item.
+     */
+    @GetMapping("/{id}/evidence/{evidenceId}")
+    public ResponseEntity<EvidenceItem> getEvidenceItem(@PathVariable UUID id, @PathVariable String evidenceId) {
+        try (var ignored = InvestigationLoggingContext.withInvestigationId(id)) {
+            return evidenceRegistry.findItemById(evidenceId, id)
+                    .map(ResponseEntity::ok)
+                    .orElse(ResponseEntity.notFound().build());
+        }
     }
 
     /**
@@ -107,14 +163,16 @@ public class InvestigationController {
      */
     @GetMapping("/{id}/hypotheses")
     public ResponseEntity<List<HypothesisResponse>> getHypotheses(@PathVariable UUID id) {
-        return investigationService.getInvestigation(id)
-                .map(res -> {
-                    List<HypothesisResponse> list = res.hypotheses().stream()
-                            .map(h -> HypothesisResponse.fromEntity(h, h.getSupportingEvidenceIds()))
-                            .toList();
-                    return ResponseEntity.ok(list);
-                })
-                .orElse(ResponseEntity.notFound().build());
+        try (var ignored = InvestigationLoggingContext.withInvestigationId(id)) {
+            return investigationService.getInvestigation(id)
+                    .map(res -> {
+                        List<HypothesisResponse> list = res.hypotheses().stream()
+                                .map(h -> HypothesisResponse.fromEntity(h, h.getSupportingEvidenceIds()))
+                                .toList();
+                        return ResponseEntity.ok(list);
+                    })
+                    .orElse(ResponseEntity.notFound().build());
+        }
     }
 
     /**
@@ -122,8 +180,12 @@ public class InvestigationController {
      */
     @GetMapping("/{id}/claims")
     public ResponseEntity<List<com.traceback.core.validation.InvestigationClaim>> getClaims(@PathVariable UUID id) {
-        return investigationService.getInvestigation(id)
-                .map(res -> ResponseEntity.ok(res.claims()))
-                .orElse(ResponseEntity.notFound().build());
+        try (var ignored = InvestigationLoggingContext.withInvestigationId(id)) {
+            List<com.traceback.core.validation.InvestigationClaim> claims = investigationService.getClaims(id);
+            if (claims.isEmpty() && investigationService.getInvestigation(id).isEmpty()) {
+                return ResponseEntity.notFound().build();
+            }
+            return ResponseEntity.ok(claims);
+        }
     }
 }

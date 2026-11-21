@@ -1,5 +1,6 @@
 package com.traceback.core.timeline;
 
+import com.traceback.core.evidence.ConcreteEvidenceRegistry;
 import com.traceback.core.git.ChangedFile;
 import com.traceback.core.git.CommitEvidence;
 import com.traceback.core.git.workingtree.WorkingTreeSnapshot;
@@ -56,15 +57,33 @@ public class TimelineBuilder {
                                              WorkingTreeSnapshot workingTreeSnapshot) {
         List<TimelineEvent> events = new ArrayList<>();
 
+        boolean isWorkingTreeMode = workingTreeSnapshot != null && workingTreeSnapshot.hasChanges();
         Instant failureBoundary = failureOnset;
         if (failureBoundary == null && logEvidence != null && logEvidence.firstObservedFailure() != null) {
             failureBoundary = logEvidence.firstObservedFailure();
+        } else if (failureBoundary == null && isWorkingTreeMode) {
+            failureBoundary = workingTreeSnapshot.observedAt();
         }
 
         // 1. Add Git Commits
         if (commits != null) {
             for (CommitEvidence commit : commits) {
-                boolean isPre = failureBoundary == null || !commit.timestamp().isAfter(failureBoundary);
+                boolean isPre;
+                String classification;
+                if (isWorkingTreeMode) {
+                    isPre = false;
+                    classification = "HISTORICAL_CONTEXT";
+                } else if (failureBoundary == null) {
+                    isPre = true;
+                    classification = "PRE_FAILURE";
+                } else if (!commit.timestamp().isAfter(failureBoundary)) {
+                    isPre = true;
+                    classification = "PRE_FAILURE";
+                } else {
+                    isPre = false;
+                    classification = "POST_FAILURE";
+                }
+
                 String evidenceId = "EVD-GIT-" + commit.shortSha();
 
                 Map<String, Object> meta = new HashMap<>();
@@ -72,6 +91,7 @@ public class TimelineBuilder {
                 meta.put("filesCount", commit.changedFiles().size());
                 meta.put("linesAdded", commit.totalLinesAdded());
                 meta.put("linesDeleted", commit.totalLinesDeleted());
+                meta.put("eventClassification", classification);
 
                 String title = "Commit: " + commit.commitMessage();
                 if (title.length() > 80) {
@@ -98,6 +118,7 @@ public class TimelineBuilder {
                             Map<String, Object> cfgMeta = new HashMap<>();
                             cfgMeta.put("filePath", cf.filePath());
                             cfgMeta.put("changes", cf.configChanges());
+                            cfgMeta.put("eventClassification", classification);
 
                             events.add(new TimelineEvent(
                                     UUID.randomUUID().toString(),
@@ -108,7 +129,7 @@ public class TimelineBuilder {
                                     "Config delta in " + cf.filePath(),
                                     "Modified configuration keys: " + cf.configChanges().keySet(),
                                     isPre,
-                                    "EVD-CFG-" + commit.shortSha(),
+                                    ConcreteEvidenceRegistry.configEvidenceId(commit.shortSha()),
                                     cfgMeta
                             ));
                         }
@@ -120,17 +141,34 @@ public class TimelineBuilder {
         // 2. Add Log Errors
         if (logEvidence != null && logEvidence.errorEntries() != null) {
             for (LogEntry err : logEvidence.errorEntries()) {
-                boolean isPre = failureBoundary != null && !err.timestamp().isAfter(failureBoundary);
+                boolean isPre;
+                String classification;
+                if (isWorkingTreeMode) {
+                    isPre = false;
+                    classification = "HISTORICAL_CONTEXT";
+                } else if (failureBoundary != null && err.timestamp().isBefore(failureBoundary)) {
+                    isPre = true;
+                    classification = "PRE_FAILURE";
+                } else if (failureBoundary != null && err.timestamp().equals(failureBoundary)) {
+                    isPre = false;
+                    classification = "FAILURE";
+                } else {
+                    isPre = false;
+                    classification = failureBoundary == null ? "PRE_FAILURE" : "POST_FAILURE";
+                }
+
                 String evidenceId = "EVD-LOG-" + err.lineNumber();
 
                 Map<String, Object> meta = new HashMap<>();
                 meta.put("thread", err.thread());
                 meta.put("logger", err.logger());
                 meta.put("line", err.lineNumber());
+                meta.put("eventClassification", classification);
 
+                Instant logTimestamp = err.timestamp() != null ? err.timestamp() : (failureBoundary != null ? failureBoundary : Instant.now());
                 events.add(new TimelineEvent(
                         UUID.randomUUID().toString(),
-                        err.timestamp(),
+                        logTimestamp,
                         "RUNTIME_ERROR",
                         "LOG",
                         "log-line-" + err.lineNumber(),
@@ -151,6 +189,7 @@ public class TimelineBuilder {
             Map<String, Object> meta = new HashMap<>();
             meta.put("exceptionType", root.exceptionType());
             meta.put("topFrame", root.getTopFrame().map(f -> f.declaringClass() + "." + f.methodName()).orElse("unknown"));
+            meta.put("eventClassification", isWorkingTreeMode ? "HISTORICAL_CONTEXT" : "FAILURE");
 
             events.add(new TimelineEvent(
                     UUID.randomUUID().toString(),
@@ -161,7 +200,7 @@ public class TimelineBuilder {
                     "Crash: " + root.exceptionType(),
                     root.message(),
                     false,
-                    "EVD-STACK-001",
+                    "EVD-STACK-ROOT",
                     meta
             ));
         }
@@ -173,12 +212,18 @@ public class TimelineBuilder {
                     ? workingTreeSnapshot.getMissingFiles().get(0).evidenceId()
                     : (workingTreeSnapshot.changes().isEmpty() ? "EVD-WT-001" : workingTreeSnapshot.changes().get(0).evidenceId());
 
+            List<String> allEvidenceIds = workingTreeSnapshot.changes().stream()
+                    .map(com.traceback.core.git.workingtree.WorkingTreeEvidence::evidenceId)
+                    .toList();
+
             Map<String, Object> meta = new HashMap<>();
             meta.put("missingCount", workingTreeSnapshot.missingTrackedCount());
             meta.put("modifiedCount", workingTreeSnapshot.getModifiedFiles().size());
             meta.put("untrackedCount", workingTreeSnapshot.getUntrackedFiles().size());
             meta.put("headCommitSha", workingTreeSnapshot.headCommitSha());
             meta.put("affectedModules", new ArrayList<>(workingTreeSnapshot.groupByAffectedModule().keySet()));
+            meta.put("allEvidenceIds", allEvidenceIds);
+            meta.put("eventClassification", "CURRENT_FORENSIC_OBSERVATION");
 
             events.add(new TimelineEvent(
                     UUID.randomUUID().toString(),
@@ -194,8 +239,8 @@ public class TimelineBuilder {
             ));
         }
 
-        // Sort strictly chronologically
-        events.sort(Comparator.comparing(TimelineEvent::timestamp));
+        // Sort strictly chronologically, nulls last
+        events.sort(Comparator.comparing(TimelineEvent::timestamp, Comparator.nullsLast(Comparator.naturalOrder())));
         return events;
     }
 }

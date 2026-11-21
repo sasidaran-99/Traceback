@@ -21,6 +21,11 @@ public class BifrostException extends RuntimeException {
         this.statusCode = statusCode;
     }
 
+    public BifrostException(String message, Throwable cause, int statusCode) {
+        super(statusCode > 0 && !message.contains("(HTTP " + statusCode + ")") ? message + " (HTTP " + statusCode + ")" : message, cause);
+        this.statusCode = statusCode;
+    }
+
     public int getStatusCode() {
         return statusCode;
     }

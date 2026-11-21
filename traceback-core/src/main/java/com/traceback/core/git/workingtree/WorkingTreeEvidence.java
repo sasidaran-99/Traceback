@@ -92,7 +92,9 @@ public record WorkingTreeEvidence(
         if (lastModified != null) {
             metadata.put("lastModified", lastModified.toString());
         }
-        metadata.put("investigationId", investigationId != null ? investigationId.toString() : "GLOBAL");
+        String invStr = investigationId != null ? investigationId.toString() : "GLOBAL";
+        metadata.put("investigationId", invStr);
+        metadata.put("originatingInvestigationId", invStr);
 
         return EvidenceItem.create(
                 evidenceId,

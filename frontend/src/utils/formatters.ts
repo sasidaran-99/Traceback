@@ -77,6 +77,13 @@ export function getStatusBadgeVariant(
       border: 'border-slate-500/30',
     };
   }
+  if (norm === 'VALIDATION_ERROR') {
+    return {
+      bg: 'bg-[#1A2129]',
+      text: 'text-[#7FA3C4]',
+      border: 'border-[#2A323C]',
+    };
+  }
   if (norm === 'REJECTED' || norm === 'CONTRADICTED' || norm === 'FAILED' || norm === 'DOWN') {
     return {
       bg: 'bg-rose-500/10',

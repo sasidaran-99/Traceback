@@ -12,7 +12,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class CorsConfigTest {
 
     @Test
-    @DisplayName("Development environment defaults to localhost patterns when unconfigured")
+    @DisplayName("Development environment defaults to exact Vite dev server origins (5173) when unconfigured")
     void devDefaultsToLocalhostPatterns() {
         MockEnvironment env = new MockEnvironment();
         env.setActiveProfiles("dev");
@@ -21,7 +21,7 @@ class CorsConfigTest {
 
         assertThat(config.isProduction()).isFalse();
         assertThat(config.getAllowedOriginPatterns())
-                .containsExactlyInAnyOrder("http://localhost:[*]", "http://127.0.0.1:[*]");
+                .containsExactlyInAnyOrder("http://localhost:5173", "http://127.0.0.1:5173");
     }
 
     @Test

@@ -1,5 +1,6 @@
 package com.traceback.core.log;
 
+import com.traceback.core.security.SecretRedactor;
 import com.traceback.core.stacktrace.ParsedException;
 
 import java.time.Instant;
@@ -17,6 +18,10 @@ public record LogEntry(
         ParsedException parsedException,
         int lineNumber
 ) {
+    public LogEntry {
+        message = message != null ? SecretRedactor.getInstance().redact(message) : "";
+        stackTraceRaw = stackTraceRaw != null ? SecretRedactor.getInstance().redact(stackTraceRaw) : "";
+    }
     public boolean isError() {
         return "ERROR".equalsIgnoreCase(level);
     }

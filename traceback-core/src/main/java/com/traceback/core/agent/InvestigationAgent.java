@@ -10,20 +10,35 @@ import com.traceback.core.correlation.ConfidenceBreakdown;
 import com.traceback.core.domain.Hypothesis;
 import com.traceback.core.evidence.EvidenceItem;
 import com.traceback.core.evidence.EvidenceRegistry;
+import com.traceback.core.investigation.InvestigationMode;
 import com.traceback.core.investigation.InvestigationResult;
 import com.traceback.core.investigation.InvestigationService;
+import com.traceback.core.logging.InvestigationLoggingContext;
 import com.traceback.core.stacktrace.ParsedException;
 import com.traceback.core.stacktrace.StackTraceFrame;
 import com.traceback.core.validation.ClaimValidationStatus;
 import com.traceback.core.validation.ClaimValidator;
 import com.traceback.core.validation.InvestigationClaim;
+import com.traceback.core.domain.AgentReportEntity;
+import com.traceback.core.domain.AgentStepEntity;
+import com.traceback.core.persistence.InvestigationPersistenceMapper;
+import com.traceback.core.repository.InvestigationAgentReportRepository;
+import com.traceback.core.repository.InvestigationAgentStepRepository;
+import com.traceback.core.repository.InvestigationClaimRepository;
+import com.traceback.core.repository.InvestigationRepository;
+import com.traceback.core.security.SecretRedactor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.util.Locale;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -47,6 +62,24 @@ public class InvestigationAgent {
 
     private final Map<UUID, InvestigationAgentReport> reportStore = new ConcurrentHashMap<>();
 
+    @Autowired(required = false)
+    private com.traceback.core.persistence.InvestigationPersistenceCoordinator persistenceCoordinator;
+
+    @Autowired(required = false)
+    private InvestigationAgentReportRepository agentReportRepository;
+
+    @Autowired(required = false)
+    private InvestigationAgentStepRepository agentStepRepository;
+
+    @Autowired(required = false)
+    private InvestigationClaimRepository claimRepository;
+
+    @Autowired(required = false)
+    private InvestigationRepository investigationRepository;
+
+    @Autowired(required = false)
+    private InvestigationPersistenceMapper persistenceMapper = new InvestigationPersistenceMapper();
+
     public InvestigationAgent(BifrostClient bifrostClient,
                               TavilyResearchService tavilyService,
                               ClaimValidator claimValidator,
@@ -67,13 +100,14 @@ public class InvestigationAgent {
 
     public InvestigationAgentReport investigate(InvestigationResult result) {
         UUID invId = result.investigationId();
+        try (var ignored = InvestigationLoggingContext.withInvestigationId(invId)) {
         List<AgentInvestigationStep> steps = new ArrayList<>();
         int stepNum = 1;
 
         // Ensure all evidence items from deterministic result are available in the active registry
         if (result.evidenceItems() != null) {
             for (EvidenceItem item : result.evidenceItems()) {
-                evidenceRegistry.registerItem(item);
+                evidenceRegistry.registerItem(item, invId);
             }
         }
 
@@ -88,30 +122,39 @@ public class InvestigationAgent {
 
         // Step 2: External Technical Research via Tavily
         List<ExternalResearchFinding> findings = new ArrayList<>();
+        String tavilyStatus;
         if (tavilyService.isAvailable()) {
             try {
                 findings.addAll(conductResearch(result));
+                tavilyStatus = "SUCCESS";
                 steps.add(AgentInvestigationStep.of(
                         stepNum++,
                         "External Technical Research",
                         String.format("Retrieved %d technical research findings from Tavily.", findings.size()),
-                        Map.of("findingCount", findings.size(), "queriesExecuted", findings.isEmpty() ? 0 : 1)
+                        Map.of("findingCount", findings.size(), "queriesExecuted", findings.isEmpty() ? 0 : 1, "status", tavilyStatus)
                 ));
             } catch (Exception e) {
                 log.warn("Tavily research encountered error: {}", e.getMessage());
+                String msg = e.getMessage() != null ? e.getMessage().toLowerCase(Locale.ROOT) : "";
+                if (msg.contains("timeout") || msg.contains("timed out")) {
+                    tavilyStatus = "TIMEOUT";
+                } else {
+                    tavilyStatus = "REQUEST_FAILURE";
+                }
                 steps.add(AgentInvestigationStep.of(
                         stepNum++,
                         "External Technical Research",
                         "Tavily research failed: " + e.getMessage() + ". Continuing with deterministic context.",
-                        Map.of("error", e.getMessage())
+                        Map.of("error", e.getMessage() != null ? e.getMessage() : "Unknown error", "status", tavilyStatus)
                 ));
             }
         } else {
+            tavilyStatus = "SKIPPED_UNCONFIGURED";
             steps.add(AgentInvestigationStep.of(
                     stepNum++,
                     "External Technical Research",
                     "Tavily research service not configured (API key missing). Skipped external search.",
-                    Collections.emptyMap()
+                    Map.of("status", tavilyStatus)
             ));
         }
 
@@ -136,12 +179,14 @@ public class InvestigationAgent {
         String aiReasoning;
         List<String> verificationSteps = new ArrayList<>();
         List<String> uncertainties = new ArrayList<>();
+        String bifrostStatus;
 
         if (bifrostClient.isAvailable()) {
             try {
                 BifrostRequest aiRequest = buildBifrostRequest(result, findings, topHypothesis, topBreakdown);
                 BifrostResponse aiResponse = bifrostClient.chatCompletion(aiRequest);
                 String completionText = aiResponse.firstContent();
+                bifrostStatus = "SUCCESS";
 
                 aiReasoning = completionText;
                 summary = extractSection(completionText, "SUMMARY",
@@ -153,7 +198,9 @@ public class InvestigationAgent {
                     primaryRootCause = "Working tree filesystem anomaly: Tracked files are missing from disk without any committed deletion in Git history. The process responsible for their disappearance is not established.";
                 } else if (finalStatus == AgentInvestigationStatus.INSUFFICIENT_EVIDENCE) {
                     summary = formatDefaultSummary(result, topHypothesis, finalStatus);
-                    primaryRootCause = "None: Available telemetry is insufficient to establish a primary cause.";
+                    primaryRootCause = result.investigationMode() == InvestigationMode.WORKING_TREE_FORENSICS
+                            ? "None: Working tree is clean and synchronized with HEAD."
+                            : "None: Available telemetry is insufficient to establish a primary cause.";
                 } else if (finalStatus == AgentInvestigationStatus.PROBABLE) {
                     if (summary.toLowerCase().contains("confirmed") || summary.toLowerCase().contains("directly triggered")) {
                         summary = formatDefaultSummary(result, topHypothesis, finalStatus);
@@ -169,42 +216,62 @@ public class InvestigationAgent {
                 uncertainties = extractList(completionText, "UNCERTAINTIES",
                         generateDefaultUncertainties(result, topBreakdown, finalStatus));
 
+                Map<String, Object> findingsMap = new LinkedHashMap<>();
+                findingsMap.put("model", bifrostClient.getConfig().model());
+                findingsMap.put("status", bifrostStatus);
+                if (aiResponse.id() != null && !aiResponse.id().isBlank()) {
+                    findingsMap.put("bifrostResponseId", aiResponse.id());
+                }
+
                 steps.add(AgentInvestigationStep.of(
                         stepNum++,
                         "Bifrost AI Gateway Reasoning",
                         String.format("Synthesized root-cause reasoning via model '%s' (tokens: %d).",
                                 aiResponse.model() != null ? aiResponse.model() : bifrostClient.getConfig().model(),
                                 aiResponse.usage() != null ? aiResponse.usage().total_tokens() : 0),
-                        Map.of("model", bifrostClient.getConfig().model())
+                        findingsMap
                 ));
 
             } catch (Exception e) {
                 log.warn("Bifrost call failed, falling back to deterministic reasoning: {}", e.getMessage());
+                String msg = e.getMessage() != null ? e.getMessage().toLowerCase(Locale.ROOT) : "";
+                if (msg.contains("timeout") || msg.contains("timed out")) {
+                    bifrostStatus = "TIMEOUT";
+                } else if (msg.contains("401") || msg.contains("auth") || msg.contains("unauthorized") || msg.contains("api key")) {
+                    bifrostStatus = "AUTH_FAILURE";
+                } else {
+                    bifrostStatus = "REQUEST_FAILURE";
+                }
                 steps.add(AgentInvestigationStep.of(
                         stepNum++,
                         "Bifrost AI Gateway Reasoning",
                         "Bifrost gateway error: " + e.getMessage() + ". Executed deterministic fallback.",
-                        Map.of("error", e.getMessage())
+                        Map.of("error", e.getMessage() != null ? e.getMessage() : "Unknown error", "status", bifrostStatus)
                 ));
                 summary = formatDefaultSummary(result, topHypothesis, finalStatus);
                 primaryRootCause = isWorkingTreeAnomaly(topHypothesis)
                         ? "Working tree filesystem anomaly: Tracked files are missing from disk without any committed deletion in Git history. The process responsible for their disappearance is not established."
-                        : (topHypothesis != null ? topHypothesis.getSummary() : "None: Telemetry is insufficient to establish a primary cause.");
+                        : (result.investigationMode() == InvestigationMode.WORKING_TREE_FORENSICS
+                                ? "None: Working tree is clean and synchronized with HEAD."
+                                : (topHypothesis != null ? topHypothesis.getSummary() : "None: Telemetry is insufficient to establish a primary cause."));
                 aiReasoning = formatFallbackReasoning(result, topHypothesis, topBreakdown, finalStatus);
                 verificationSteps = generateDefaultVerificationSteps(result, topHypothesis);
                 uncertainties = generateDefaultUncertainties(result, topBreakdown, finalStatus);
             }
         } else {
+            bifrostStatus = "UNCONFIGURED";
             steps.add(AgentInvestigationStep.of(
                     stepNum++,
                     "Bifrost AI Gateway Reasoning",
                     "Bifrost client not configured (API key missing). Deterministic fallback reasoning generated.",
-                    Collections.emptyMap()
+                    Map.of("status", bifrostStatus)
             ));
             summary = formatDefaultSummary(result, topHypothesis, finalStatus);
             primaryRootCause = isWorkingTreeAnomaly(topHypothesis)
                     ? "Working tree filesystem anomaly: Tracked files are missing from disk without any committed deletion in Git history. The process responsible for their disappearance is not established."
-                    : (topHypothesis != null ? topHypothesis.getSummary() : "None: Telemetry is insufficient to establish a primary cause.");
+                    : (result.investigationMode() == InvestigationMode.WORKING_TREE_FORENSICS
+                            ? "None: Working tree is clean and synchronized with HEAD."
+                            : (topHypothesis != null ? topHypothesis.getSummary() : "None: Telemetry is insufficient to establish a primary cause."));
             aiReasoning = formatFallbackReasoning(result, topHypothesis, topBreakdown, finalStatus);
             verificationSteps = generateDefaultVerificationSteps(result, topHypothesis);
             uncertainties = generateDefaultUncertainties(result, topBreakdown, finalStatus);
@@ -245,7 +312,7 @@ public class InvestigationAgent {
                 .toList();
 
         long validCount = validatedClaims.stream().filter(c -> c.status() == ClaimValidationStatus.SUPPORTED || c.status() == ClaimValidationStatus.PARTIALLY_SUPPORTED).count();
-        long unsuppCount = validatedClaims.stream().filter(c -> c.status() == ClaimValidationStatus.UNSUPPORTED || c.status() == ClaimValidationStatus.CONTRADICTED).count();
+        long unsuppCount = validatedClaims.stream().filter(c -> c.status() == ClaimValidationStatus.UNSUPPORTED || c.status() == ClaimValidationStatus.CONTRADICTED || c.status() == ClaimValidationStatus.VALIDATION_ERROR).count();
 
         steps.add(AgentInvestigationStep.of(
                 stepNum++,
@@ -267,13 +334,27 @@ public class InvestigationAgent {
                 ? result.hypotheses().subList(1, result.hypotheses().size())
                 : Collections.emptyList();
 
-        List<String> supportingEvidenceIds = topHypothesis != null && topCommitSha != null
-                ? result.evidenceByCommitSha().getOrDefault(topCommitSha, Collections.emptyList())
-                : Collections.emptyList();
+        List<String> supportingEvidenceIds;
+        if (isWorkingTreeAnomaly(topHypothesis)) {
+            supportingEvidenceIds = topHypothesis.getSupportingEvidenceIds() != null
+                    ? topHypothesis.getSupportingEvidenceIds()
+                    : Collections.emptyList();
+        } else if (topHypothesis != null && topCommitSha != null) {
+            supportingEvidenceIds = result.evidenceByCommitSha().getOrDefault(topCommitSha, Collections.emptyList());
+        } else {
+            supportingEvidenceIds = Collections.emptyList();
+        }
 
-        List<String> contradictoryEvidenceIds = topHypothesis != null && topCommitSha != null && result.counterEvidenceByCommitSha().containsKey(topCommitSha)
-                ? List.of(result.counterEvidenceByCommitSha().get(topCommitSha))
-                : Collections.emptyList();
+        List<String> contradictoryEvidenceIds;
+        if (isWorkingTreeAnomaly(topHypothesis)) {
+            contradictoryEvidenceIds = topHypothesis.getContradictingEvidenceIds() != null
+                    ? topHypothesis.getContradictingEvidenceIds()
+                    : Collections.emptyList();
+        } else if (topHypothesis != null && topCommitSha != null && result.counterEvidenceByCommitSha().containsKey(topCommitSha)) {
+            contradictoryEvidenceIds = List.of(result.counterEvidenceByCommitSha().get(topCommitSha));
+        } else {
+            contradictoryEvidenceIds = Collections.emptyList();
+        }
 
         InvestigationAgentReport report = new InvestigationAgentReport(
                 "REP-" + UUID.randomUUID().toString().substring(0, 8),
@@ -292,20 +373,131 @@ public class InvestigationAgent {
                 finalStatus,
                 validatedClaims,
                 steps,
-                Instant.now()
+                Instant.now(),
+                bifrostStatus,
+                tavilyStatus
         );
 
+        // Durable PostgreSQL persistence
+        boolean persisted = persistReport(report);
+        if (persisted) {
+            report = report.withPersistenceStatus(true, "DURABLE");
+        } else {
+            report = report.withPersistenceStatus(false, "PERSISTENCE_FAILED");
+        }
+
         reportStore.put(invId, report);
-        log.info("Agent report {} generated for investigation {} with status {}", report.reportId(), invId, finalStatus);
+
+        log.info("Agent report {} generated for investigation {} with status {} (persistedDurable={})",
+                report.reportId(), invId, finalStatus, report.persistedDurable());
         return report;
+        }
+    }
+
+    private boolean persistReport(InvestigationAgentReport report) {
+        if (persistenceCoordinator == null) {
+            log.warn("InvestigationPersistenceCoordinator is unavailable; skipping durable persistence to prevent uncoordinated/non-transactional writes for report {}", report.reportId());
+            return false;
+        }
+        try {
+            return persistenceCoordinator.persistReportCoordinated(report);
+        } catch (Exception e) {
+            log.error("Failed to persist agent report {} coordinated: {}", report.reportId(), SecretRedactor.redactText(e.getMessage()));
+            return false;
+        }
+    }
+
+    /**
+     * Persists agent audit steps transactionally, enforcing deterministic identity and avoiding duplication.
+     */
+    @Transactional
+    public void persistAgentSteps(UUID investigationId, List<AgentInvestigationStep> steps) {
+        if (agentStepRepository == null || steps == null) {
+            return;
+        }
+        for (AgentInvestigationStep step : steps) {
+            Optional<AgentStepEntity> existing = agentStepRepository.findByInvestigationIdAndStepNumber(investigationId, step.stepNumber());
+            AgentStepEntity entity = persistenceMapper.toEntity(
+                    step,
+                    investigationId,
+                    existing.map(AgentStepEntity::getId).orElse(null)
+            );
+            agentStepRepository.save(entity);
+        }
+
+        // Clean up any trailing steps if a forced rerun produced fewer steps
+        List<AgentStepEntity> existingSteps = agentStepRepository.findByInvestigationIdOrderByStepNumberAsc(investigationId);
+        for (AgentStepEntity se : existingSteps) {
+            if (se.getStepNumber() > steps.size()) {
+                agentStepRepository.delete(se);
+            }
+        }
+    }
+
+    public void cacheReport(InvestigationAgentReport report) {
+        if (report != null && report.investigationId() != null) {
+            reportStore.put(report.investigationId(), report);
+        }
     }
 
     public List<InvestigationAgentReport> getAllReports() {
+        if (agentReportRepository != null) {
+            List<AgentReportEntity> allEntities = agentReportRepository.findAll();
+            List<InvestigationAgentReport> reports = new ArrayList<>();
+            for (AgentReportEntity entity : allEntities) {
+                InvestigationAgentReport cached = reportStore.get(entity.getInvestigationId());
+                if (cached != null && cached.reportId().equals(entity.getReportId())) {
+                    reports.add(cached);
+                } else {
+                    List<AgentInvestigationStep> steps = getInvestigationSteps(entity.getInvestigationId());
+                    InvestigationAgentReport reconstructed = persistenceMapper.toDomain(entity, steps)
+                            .withPersistenceStatus(true, "DURABLE");
+                    reports.add(reconstructed);
+                }
+            }
+            return reports;
+        }
         return List.copyOf(reportStore.values());
     }
 
     public Optional<InvestigationAgentReport> getReport(UUID investigationId) {
-        return Optional.ofNullable(reportStore.get(investigationId));
+        InvestigationAgentReport cached = reportStore.get(investigationId);
+        if (cached != null) {
+            return Optional.of(cached);
+        }
+
+        if (agentReportRepository != null) {
+            Optional<AgentReportEntity> entityOpt = Optional.empty();
+            if (investigationRepository != null) {
+                Optional<com.traceback.core.domain.InvestigationEntity> invOpt = investigationRepository.findById(investigationId);
+                if (invOpt.isPresent() && invOpt.get().getReportId() != null && !invOpt.get().getReportId().isBlank()) {
+                    entityOpt = agentReportRepository.findByReportId(invOpt.get().getReportId());
+                }
+            }
+            if (entityOpt.isEmpty()) {
+                entityOpt = agentReportRepository.findLatestByInvestigationId(investigationId);
+            }
+
+            if (entityOpt.isPresent()) {
+                List<AgentInvestigationStep> steps = getInvestigationSteps(investigationId);
+                InvestigationAgentReport reconstructed = persistenceMapper.toDomain(entityOpt.get(), steps)
+                        .withPersistenceStatus(true, "DURABLE");
+                reportStore.put(investigationId, reconstructed);
+                return Optional.of(reconstructed);
+            }
+        }
+
+        return Optional.empty();
+    }
+
+    public List<InvestigationAgentReport> getReportHistory(UUID investigationId) {
+        if (agentReportRepository != null) {
+            List<AgentReportEntity> entities = agentReportRepository.findByInvestigationIdOrderByCreatedAtDesc(investigationId);
+            List<AgentInvestigationStep> steps = getInvestigationSteps(investigationId);
+            return entities.stream().map(e -> persistenceMapper.toDomain(e, steps).withPersistenceStatus(true, "DURABLE")).toList();
+        }
+        InvestigationAgentReport cached = reportStore.get(investigationId);
+        return cached != null ? List.of(cached) : Collections.emptyList();
     }
 
     public List<ExternalResearchFinding> getResearchFindings(UUID investigationId) {
@@ -313,7 +505,50 @@ public class InvestigationAgent {
     }
 
     public List<AgentInvestigationStep> getInvestigationSteps(UUID investigationId) {
-        return getReport(investigationId).map(InvestigationAgentReport::investigationSteps).orElse(Collections.emptyList());
+        InvestigationAgentReport cached = reportStore.get(investigationId);
+        if (cached != null && cached.investigationSteps() != null && !cached.investigationSteps().isEmpty()) {
+            return cached.investigationSteps();
+        }
+
+        if (agentStepRepository != null) {
+            List<AgentStepEntity> entities = agentStepRepository.findByInvestigationIdOrderByStepNumberAsc(investigationId);
+            if (!entities.isEmpty()) {
+                return entities.stream().map(persistenceMapper::toDomain).toList();
+            }
+        }
+
+        return Collections.emptyList();
+    }
+
+    public void setPersistenceCoordinator(com.traceback.core.persistence.InvestigationPersistenceCoordinator persistenceCoordinator) {
+        this.persistenceCoordinator = persistenceCoordinator;
+    }
+
+    public com.traceback.core.persistence.InvestigationPersistenceCoordinator getPersistenceCoordinator() {
+        return persistenceCoordinator;
+    }
+
+    public void setAgentReportRepository(InvestigationAgentReportRepository agentReportRepository) {
+        this.agentReportRepository = agentReportRepository;
+    }
+
+    public void setAgentStepRepository(InvestigationAgentStepRepository agentStepRepository) {
+        this.agentStepRepository = agentStepRepository;
+    }
+
+    public void setClaimRepository(InvestigationClaimRepository claimRepository) {
+        this.claimRepository = claimRepository;
+    }
+
+    public void setInvestigationRepository(InvestigationRepository investigationRepository) {
+        this.investigationRepository = investigationRepository;
+    }
+
+    @Autowired(required = false)
+    public void setPersistenceMapper(InvestigationPersistenceMapper persistenceMapper) {
+        if (persistenceMapper != null) {
+            this.persistenceMapper = persistenceMapper;
+        }
     }
 
     private String getCommitSha(Hypothesis hypothesis) {
@@ -353,7 +588,10 @@ public class InvestigationAgent {
                 }
                 q1 = q1 + " " + cleanMsg;
             }
-            findings.addAll(tavilyService.research(q1, "Java Spring Boot failure"));
+            String serviceContext = (result.serviceName() != null && !result.serviceName().isBlank())
+                    ? result.serviceName() + " failure"
+                    : "software failure";
+            findings.addAll(tavilyService.research(q1, serviceContext));
         }
 
         return findings;
@@ -434,9 +672,10 @@ public class InvestigationAgent {
             }
         }
 
+        String sanitizedUserPrompt = SecretRedactor.getInstance().redact(sb.toString());
         List<BifrostMessage> messages = List.of(
                 BifrostMessage.system(systemPrompt),
-                BifrostMessage.user(sb.toString())
+                BifrostMessage.user(sanitizedUserPrompt)
         );
 
         return BifrostRequest.of(bifrostClient.getConfig().model(), messages);
@@ -464,19 +703,20 @@ public class InvestigationAgent {
         double conf = topHypothesis.getConfidenceScore();
         boolean hasPenalty = topBreakdown != null && topBreakdown.contradictionPenalty() > 0;
 
-        if (conf < 0.40 || hasPenalty) {
+        if (conf < 0.35 || hasPenalty) {
             return AgentInvestigationStatus.INSUFFICIENT_EVIDENCE;
         }
 
-        // A confirmed verdict requires explicit evidence satisfying grounding and validation rules.
-        // A high heuristic score alone must NOT establish confirmation.
-        // A configuration change alone without independent deployment verification or corroborating repeated failure logs is PROBABLE.
+        // A confirmed verdict requires strong evidence (score >= 0.80 with zero contradictions,
+        // or explicit confirmation, deployment proof, or direct stack frame match with confidence >= 0.50).
+        // Modest scores (e.g. Scenario A at 71%, Scenario E at 76%) without deployment proof remain PROBABLE,
+        // unless direct execution overlap is confirmed with confidence >= 0.50.
         boolean isExplicitlyConfirmed = topHypothesis.getStatus() == com.traceback.core.domain.HypothesisStatus.CONFIRMED;
         boolean hasDeploymentProof = hasDeploymentEvidence(result, topHypothesis);
-        boolean hasCorroboratingLogBurst = topBreakdown != null && topBreakdown.agreementPoints() >= 15.0 && result.errorsDetected() > 1;
-        boolean hasDirectExecutionOverlap = hasDirectCrashFrameMatch(topHypothesis);
+        boolean hasDirectExecutionOverlap = hasDirectCrashFrameMatch(topHypothesis) && conf >= 0.50;
+        boolean isStrongUncontradicted = conf >= 0.80 && (topBreakdown == null || topBreakdown.contradictionPenalty() == 0);
 
-        if (conf >= 0.75 && (isExplicitlyConfirmed || hasDeploymentProof || hasDirectExecutionOverlap || hasCorroboratingLogBurst)) {
+        if (isExplicitlyConfirmed || hasDeploymentProof || hasDirectExecutionOverlap || isStrongUncontradicted) {
             return AgentInvestigationStatus.CONFIRMED;
         } else {
             return AgentInvestigationStatus.PROBABLE;
@@ -505,13 +745,21 @@ public class InvestigationAgent {
 
     private String formatDefaultSummary(InvestigationResult result, Hypothesis topHypothesis, AgentInvestigationStatus verdict) {
         if (isWorkingTreeAnomaly(topHypothesis)) {
-            return topHypothesis.getSummary();
+            String genSummary = topHypothesis.getSummary();
+            if (genSummary != null && !genSummary.isBlank()) {
+                return genSummary + ". Tracked files are missing from disk without any committed deletion in Git history. Responsible external process remains unknown.";
+            }
+            return "Working tree filesystem anomaly confirmed: Tracked files are missing from disk without any committed deletion in Git history. Responsible external process remains unknown.";
         }
 
         String excDisplay = result.primaryException() != null ? result.primaryException().formatTypeChain() : "Unknown error";
         String sha = getCommitSha(topHypothesis);
 
         if (verdict == AgentInvestigationStatus.INSUFFICIENT_EVIDENCE || topHypothesis == null || sha == null) {
+            if (result.investigationMode() == InvestigationMode.WORKING_TREE_FORENSICS) {
+                return String.format("Working-tree forensic analysis for %s service found no uncommitted discrepancies or missing tracked files in the repository.",
+                        result.serviceName());
+            }
             return String.format("Investigation into %s in %s service is inconclusive due to insufficient evidence. Available telemetry is inadequate to establish a verified causal link.",
                     excDisplay, result.serviceName());
         }
@@ -534,6 +782,10 @@ public class InvestigationAgent {
                     + "- The responsible deletion process (e.g. antivirus quarantine, sync client, script, or user error) is uncorroborated without system audit logs.";
         }
 
+        if (result.investigationMode() == InvestigationMode.WORKING_TREE_FORENSICS) {
+            return "Working-tree forensic inspection completed. The repository working tree is clean and matches HEAD with no uncommitted modifications, staged changes, or missing tracked files.";
+        }
+
         StringBuilder sb = new StringBuilder();
         sb.append("Deterministic Fallback Analysis:\n");
 
@@ -550,6 +802,8 @@ public class InvestigationAgent {
         } else if (excDisplay != null) {
             sb.append(String.format("Evaluated %d commits against observed runtime crash stack trace (%s). ",
                     commits, excDisplay));
+        } else if (result.investigationMode() == InvestigationMode.WORKING_TREE_FORENSICS) {
+            sb.append(String.format("Evaluated %d commits and working-tree state for %s service. ", commits, result.serviceName()));
         } else {
             sb.append(String.format("Evaluated %d commits against %d observed error logs. ",
                     commits, logErrors));
@@ -585,24 +839,81 @@ public class InvestigationAgent {
     private List<String> generateDefaultVerificationSteps(InvestigationResult result, Hypothesis topHypothesis) {
         if (isWorkingTreeAnomaly(topHypothesis)) {
             return List.of(
-                    "Verify whether files were removed by an external process, script, or environment synchronization.",
-                    "Restore missing working-tree files from HEAD using 'git checkout HEAD -- <paths>' if disappearance was unintended.",
-                    "Review operating system file-system audit logs for process deletion events."
+                    "[Suggested] Review operating system filesystem audit logs (e.g. Auditd or Event Viewer) for file deletion events.",
+                    "[Suggested] Review background synchronization tools, IDE plugins, and build scripts that touch the working directory.",
+                    "[Suggested] Verify local repository working tree status using 'git status --porcelain'.",
+                    "[Pending verification] [POTENTIALLY DESTRUCTIVE - REQUIRES USER CONFIRMATION] Restore missing files from HEAD using 'git checkout HEAD -- <paths>' only after confirming disappearance was unintended."
+            );
+        }
+
+        if (result.investigationMode() == InvestigationMode.WORKING_TREE_FORENSICS) {
+            return List.of(
+                    "[Suggested] Verify that the local repository branch is up-to-date with remote HEAD.",
+                    "[Suggested] No further working-tree remediation required; working tree is clean."
             );
         }
 
         List<String> steps = new ArrayList<>();
         String sha = getCommitSha(topHypothesis);
-        if (topHypothesis != null && sha != null) {
-            steps.add(String.format("Inspect diff of commit %s and review modified classes/configuration.", sha));
-            steps.add("Verify active deployment status: Confirm whether this commit was built, deployed, and active in the target environment at the incident time.");
-            steps.add("Check runtime connection pool / resource saturation metrics around the failure window.");
+        String errorText = "";
+        if (result.primaryException() != null) {
+            errorText = result.primaryException().formatTypeChain() + " " + result.primaryException().message();
+        } else if (result.evidenceItems() != null) {
+            StringBuilder sb = new StringBuilder();
+            for (EvidenceItem item : result.evidenceItems()) {
+                if (item.evidenceType() == com.traceback.core.evidence.EvidenceType.ERROR_SIGNATURE
+                        || item.evidenceType() == com.traceback.core.evidence.EvidenceType.LOG_ERROR
+                        || item.evidenceType() == com.traceback.core.evidence.EvidenceType.STACK_TRACE) {
+                    sb.append(item.summary()).append(" ").append(item.originalReference()).append(" ");
+                }
+            }
+            errorText = sb.toString();
+        }
+        String errorLower = errorText.toLowerCase(Locale.ROOT);
+
+        // Context-aware: JavaScript / Node TypeError
+        if (errorLower.contains("typeerror") || (topHypothesis != null && topHypothesis.getSummary() != null && topHypothesis.getSummary().contains(".js"))) {
+            steps.add("[Suggested] Inspect undefined object property access and verify data source schema in failing stack frame.");
+            steps.add("[Suggested] Validate API response shape and ensure upstream service provides required nested properties.");
+            steps.add("[Suggested] Implement defensive optional chaining (e.g. obj?.details) and explicit null checks.");
+            steps.add("[Pending verification] Reproduce failing request in staging environment with identical input payload.");
+            if (sha != null) {
+                steps.add(String.format("[Suggested] Compare suspect commit %s against previous working revision in source control.", sha));
+            }
+            return steps;
+        }
+
+        // Context-aware: External network / socket / gateway timeout
+        if (errorLower.contains("sockettimeoutexception") || errorLower.contains("connectexception") || errorLower.contains("connect timed out") || errorLower.contains("gateway")) {
+            steps.add("[Suggested] Verify DNS resolution and outbound network routing for target gateway endpoint.");
+            steps.add("[Suggested] Test outbound network connectivity using ping or curl from the affected container/host.");
+            steps.add("[Suggested] Inspect security group egress rules, firewall tables, and corporate proxy configurations.");
+            steps.add("[Suggested] Check external service status dashboard for third-party outage or degradation.");
+            steps.add("[Suggested] Review socket connect timeout and read timeout parameters in client configuration.");
+            return steps;
+        }
+
+        // Context-aware: Database connection pool exhaustion / SQL timeout
+        if (errorLower.contains("connection slots") || errorLower.contains("sqltimeoutexception") || errorLower.contains("hikari") || errorLower.contains("connection timeout") || errorLower.contains("psqlexception")) {
+            steps.add("[Suggested] Inspect connection pool configuration (maximum-pool-size, connection-timeout) against database server max_connections.");
+            steps.add("[Suggested] Inspect active and idle database connections on PostgreSQL server (e.g. pg_stat_activity).");
+            steps.add("[Suggested] Audit repository database transaction scopes for unclosed connections or long-running queries.");
+            if (sha != null) {
+                steps.add(String.format("[Pending verification] Confirm active deployment timing: verify CI/CD release logs for commit %s.", sha));
+            }
+            steps.add("[Pending verification] Reproduce under controlled synthetic concurrency in staging with suspect pool parameters.");
+            return steps;
+        }
+
+        // General fallback
+        if (sha != null) {
+            steps.add(String.format("[Suggested] Inspect diff of commit %s and review modified classes/configuration.", sha));
+            steps.add("[Pending verification] Verify active deployment status: confirm whether this commit was built, deployed, and active in the target environment at the incident time.");
         }
         if (result.primaryException() != null) {
-            steps.add(String.format("Reproduce '%s' in a staging environment with the suspect commit reverted.",
+            steps.add(String.format("[Pending verification] Reproduce '%s' in a staging environment with the suspect commit reverted.",
                     result.primaryException().formatTypeChain()));
         }
-        steps.add("Verify health check and active database connection counts during peak load.");
         return steps;
     }
 
@@ -612,6 +923,12 @@ public class InvestigationAgent {
             return List.of(
                     "Git evidence confirms physical absence of tracked files from the working directory, but cannot establish which process (e.g. user action, IDE, antivirus, background sync) removed them without OS filesystem audit logs.",
                     "No committed deletion exists in repository history (HEAD tracks all missing files)."
+            );
+        }
+
+        if (result.investigationMode() == InvestigationMode.WORKING_TREE_FORENSICS) {
+            return List.of(
+                    "Repository working directory is synchronized with HEAD. No uncommitted modifications or missing files detected."
             );
         }
 

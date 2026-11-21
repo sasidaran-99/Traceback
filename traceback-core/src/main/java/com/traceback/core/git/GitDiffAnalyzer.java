@@ -1,5 +1,6 @@
 package com.traceback.core.git;
 
+import com.traceback.core.security.SecretRedactor;
 import org.springframework.stereotype.Component;
 
 import java.io.BufferedReader;
@@ -94,23 +95,44 @@ public class GitDiffAnalyzer {
             }
         }
 
-        return changes;
+        return SecretRedactor.getInstance().redactConfigMap(changes);
     }
 
     private void parseConfigLine(String line, Map<String, String> destination) {
-        if (line.startsWith("#") || line.startsWith("//") || line.isBlank()) {
+        if (line.startsWith("#") || line.startsWith("//") || line.startsWith(";") || line.isBlank()) {
+            return;
+        }
+
+        if (line.startsWith("[") && line.endsWith("]")) {
+            return;
+        }
+
+        // Exclude common programming language statements and keywords
+        if (line.startsWith("this.") || line.startsWith("return ") || line.startsWith("import ") ||
+                line.startsWith("package ") || line.startsWith("public ") || line.startsWith("private ") ||
+                line.startsWith("protected ") || line.startsWith("const ") || line.startsWith("let ") ||
+                line.startsWith("var ") || line.endsWith(";")) {
             return;
         }
 
         Matcher propMatcher = PROPERTIES_PATTERN.matcher(line);
         if (propMatcher.matches()) {
-            destination.put(propMatcher.group(1).trim(), propMatcher.group(2).trim());
+            String key = propMatcher.group(1).trim();
+            String val = propMatcher.group(2).trim();
+            if (!key.contains(" ") && !key.startsWith("this.") && !val.isBlank()) {
+                destination.put(key, val);
+            }
             return;
         }
 
         Matcher yamlMatcher = YAML_PATTERN.matcher(line);
         if (yamlMatcher.matches()) {
-            destination.put(yamlMatcher.group(1).trim(), yamlMatcher.group(2).trim());
+            String key = yamlMatcher.group(1).trim();
+            String val = yamlMatcher.group(2).trim();
+            // Ignore structural section headers with empty values unless they provide real values
+            if (!key.contains(" ") && !key.startsWith("this.") && !val.isBlank()) {
+                destination.put(key, val);
+            }
         }
     }
 }

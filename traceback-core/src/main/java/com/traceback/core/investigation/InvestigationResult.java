@@ -38,7 +38,10 @@ public record InvestigationResult(
         Map<String, String> counterEvidenceByCommitSha,
         Map<String, ConfidenceBreakdown> confidenceBreakdownsByCommitSha,
         List<InvestigationClaim> claims,
-        boolean evidenceSufficient
+        boolean evidenceSufficient,
+        InvestigationMode investigationMode,
+        boolean persistedDurable,
+        String persistenceStatus
 ) {
     public InvestigationResult {
         if (timeline == null) timeline = Collections.emptyList();
@@ -49,6 +52,63 @@ public record InvestigationResult(
         if (counterEvidenceByCommitSha == null) counterEvidenceByCommitSha = Collections.emptyMap();
         if (confidenceBreakdownsByCommitSha == null) confidenceBreakdownsByCommitSha = Collections.emptyMap();
         if (claims == null) claims = Collections.emptyList();
+        if (investigationMode == null) investigationMode = InvestigationMode.RUNTIME_FAILURE;
+        if (persistenceStatus == null) persistenceStatus = persistedDurable ? "DURABLE" : "EPHEMERAL";
+    }
+
+    public InvestigationResult(
+            UUID investigationId,
+            String serviceName,
+            String environment,
+            Instant startedAt,
+            Instant completedAt,
+            String status,
+            int commitsAnalyzed,
+            int errorsDetected,
+            ParsedException primaryException,
+            List<TimelineEvent> timeline,
+            List<EvidenceItem> evidenceItems,
+            List<Relationship> relationships,
+            List<Hypothesis> hypotheses,
+            Map<String, List<String>> evidenceByCommitSha,
+            Map<String, String> counterEvidenceByCommitSha,
+            Map<String, ConfidenceBreakdown> confidenceBreakdownsByCommitSha,
+            List<InvestigationClaim> claims,
+            boolean evidenceSufficient,
+            InvestigationMode investigationMode
+    ) {
+        this(investigationId, serviceName, environment, startedAt, completedAt, status,
+                commitsAnalyzed, errorsDetected, primaryException, timeline, evidenceItems,
+                relationships, hypotheses, evidenceByCommitSha, counterEvidenceByCommitSha,
+                confidenceBreakdownsByCommitSha, claims, evidenceSufficient, investigationMode,
+                false, "EPHEMERAL");
+    }
+
+    public InvestigationResult(
+            UUID investigationId,
+            String serviceName,
+            String environment,
+            Instant startedAt,
+            Instant completedAt,
+            String status,
+            int commitsAnalyzed,
+            int errorsDetected,
+            ParsedException primaryException,
+            List<TimelineEvent> timeline,
+            List<EvidenceItem> evidenceItems,
+            List<Relationship> relationships,
+            List<Hypothesis> hypotheses,
+            Map<String, List<String>> evidenceByCommitSha,
+            Map<String, String> counterEvidenceByCommitSha,
+            Map<String, ConfidenceBreakdown> confidenceBreakdownsByCommitSha,
+            List<InvestigationClaim> claims,
+            boolean evidenceSufficient
+    ) {
+        this(investigationId, serviceName, environment, startedAt, completedAt, status,
+                commitsAnalyzed, errorsDetected, primaryException, timeline, evidenceItems,
+                relationships, hypotheses, evidenceByCommitSha, counterEvidenceByCommitSha,
+                confidenceBreakdownsByCommitSha, claims, evidenceSufficient, InvestigationMode.RUNTIME_FAILURE,
+                false, "EPHEMERAL");
     }
 
     public InvestigationResult(
@@ -71,7 +131,18 @@ public record InvestigationResult(
         this(investigationId, serviceName, environment, startedAt, completedAt, status,
                 commitsAnalyzed, errorsDetected, primaryException, timeline, evidenceItems,
                 relationships, hypotheses, evidenceByCommitSha, counterEvidenceByCommitSha,
-                Collections.emptyMap(), Collections.emptyList(), true);
+                Collections.emptyMap(), Collections.emptyList(), true, InvestigationMode.RUNTIME_FAILURE,
+                false, "EPHEMERAL");
+    }
+
+    public InvestigationResult withPersistenceStatus(boolean persistedDurable, String persistenceStatus) {
+        return new InvestigationResult(
+                investigationId, serviceName, environment, startedAt, completedAt, status,
+                commitsAnalyzed, errorsDetected, primaryException, timeline, evidenceItems,
+                relationships, hypotheses, evidenceByCommitSha, counterEvidenceByCommitSha,
+                confidenceBreakdownsByCommitSha, claims, evidenceSufficient, investigationMode,
+                persistedDurable, persistenceStatus
+        );
     }
 
     public Hypothesis getPrimaryHypothesis() {

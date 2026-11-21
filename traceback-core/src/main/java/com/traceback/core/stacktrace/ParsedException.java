@@ -1,12 +1,15 @@
 package com.traceback.core.stacktrace;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.traceback.core.security.SecretRedactor;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 
 /**
- * Parsed representation of a Java exception with nested causes and structured frames.
+ * Parsed representation of an application exception with nested causes and structured frames.
  */
 public record ParsedException(
         String exceptionType,
@@ -18,11 +21,15 @@ public record ParsedException(
         if (frames == null) {
             frames = Collections.emptyList();
         }
+        if (message != null && !message.isBlank()) {
+            message = SecretRedactor.getInstance().redact(message);
+        }
     }
 
     /**
      * Flattens the exception and all nested causes into a single list from root to outermost.
      */
+    @JsonIgnore
     public List<ParsedException> getCauseChain() {
         List<ParsedException> chain = new ArrayList<>();
         ParsedException current = this;
@@ -36,6 +43,7 @@ public record ParsedException(
     /**
      * Finds the innermost root cause in the chain.
      */
+    @JsonIgnore
     public ParsedException getRootCause() {
         ParsedException current = this;
         while (current.cause() != null) {
@@ -47,6 +55,7 @@ public record ParsedException(
     /**
      * Locates the first frame originating from application code (non-framework).
      */
+    @JsonIgnore
     public Optional<StackTraceFrame> getTopApplicationFrame() {
         for (ParsedException pe : getCauseChain()) {
             for (StackTraceFrame frame : pe.frames()) {
@@ -61,6 +70,7 @@ public record ParsedException(
     /**
      * Finds the very first frame of the root cause.
      */
+    @JsonIgnore
     public Optional<StackTraceFrame> getTopFrame() {
         ParsedException root = getRootCause();
         if (!root.frames().isEmpty()) {

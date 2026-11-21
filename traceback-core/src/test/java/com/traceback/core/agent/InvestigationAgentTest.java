@@ -171,6 +171,7 @@ class InvestigationAgentTest {
         assertThat(report.sourceUrls()).contains("https://github.com/brettwooldridge/HikariCP/wiki/Pool-Analysis");
         assertThat(report.recommendedVerificationSteps()).contains("Increase maximum-pool-size to 20");
         assertThat(report.investigationSteps()).hasSize(5);
+        assertThat(report.investigationSteps().get(2).metadata()).containsEntry("bifrostResponseId", "chatcmpl-test");
 
         // Verify claims grounded in evidence registry
         assertThat(report.validatedClaims()).isNotEmpty();
@@ -204,7 +205,7 @@ class InvestigationAgentTest {
 
         InvestigationClaim validated = claimValidator.validateClaim(hallucinatedClaim, invId, evidenceRegistry);
 
-        assertThat(validated.status()).isEqualTo(ClaimValidationStatus.UNSUPPORTED);
+        assertThat(validated.status()).isEqualTo(ClaimValidationStatus.VALIDATION_ERROR);
         assertThat(validated.explanation()).contains("was not found in the active evidence registry");
     }
 
@@ -289,5 +290,61 @@ class InvestigationAgentTest {
         assertThat(report.investigationSteps()).hasSize(5);
         assertThat(report.investigationSteps().stream()
                 .anyMatch(s -> s.description().contains("Deterministic fallback reasoning"))).isTrue();
+    }
+
+    @Test
+    @DisplayName("Should capture bifrostResponseId in step metadata when returned by AI Gateway")
+    void shouldCaptureBifrostResponseIdInStepMetadata() {
+        UUID invId = UUID.randomUUID();
+        InvestigationResult result = createMinimalResult(invId);
+
+        when(mockBifrostClient.isAvailable()).thenReturn(true);
+        BifrostResponse aiResponse = new BifrostResponse(
+                "chatcmpl-corr-999", "chat.completion", 12345, "gpt-4o",
+                List.of(new BifrostResponse.Choice(0, BifrostMessage.assistant("SUMMARY: Test.\nROOT CAUSE: Test."), "stop")),
+                new BifrostResponse.Usage(10, 10, 20)
+        );
+        when(mockBifrostClient.chatCompletion(any(BifrostRequest.class))).thenReturn(aiResponse);
+
+        InvestigationAgentReport report = agent.investigate(result);
+        AgentInvestigationStep bifrostStep = report.investigationSteps().stream()
+                .filter(s -> "Bifrost AI Gateway Reasoning".equals(s.stepName()))
+                .findFirst()
+                .orElseThrow();
+
+        assertThat(bifrostStep.metadata()).containsEntry("bifrostResponseId", "chatcmpl-corr-999");
+    }
+
+    @Test
+    @DisplayName("Should safely handle null or blank bifrost response ID without leaking or throwing")
+    void shouldSafelyHandleNullOrBlankBifrostResponseId() {
+        UUID invId = UUID.randomUUID();
+        InvestigationResult result = createMinimalResult(invId);
+
+        when(mockBifrostClient.isAvailable()).thenReturn(true);
+        BifrostResponse aiResponse = new BifrostResponse(
+                null, "chat.completion", 12345, "gpt-4o",
+                List.of(new BifrostResponse.Choice(0, BifrostMessage.assistant("SUMMARY: Test.\nROOT CAUSE: Test."), "stop")),
+                new BifrostResponse.Usage(10, 10, 20)
+        );
+        when(mockBifrostClient.chatCompletion(any(BifrostRequest.class))).thenReturn(aiResponse);
+
+        InvestigationAgentReport report = agent.investigate(result);
+        AgentInvestigationStep bifrostStep = report.investigationSteps().stream()
+                .filter(s -> "Bifrost AI Gateway Reasoning".equals(s.stepName()))
+                .findFirst()
+                .orElseThrow();
+
+        assertThat(bifrostStep.metadata()).doesNotContainKey("bifrostResponseId");
+        assertThat(bifrostStep.metadata()).containsEntry("status", "SUCCESS");
+    }
+
+    private InvestigationResult createMinimalResult(UUID invId) {
+        return new InvestigationResult(
+                invId, "test-service", "test-env",
+                Instant.now().minusSeconds(10), Instant.now(), "COMPLETED",
+                1, 1, null, List.of(), List.of(), List.of(),
+                List.of(), Map.of(), Map.of(), Map.of(), List.of(), true
+        );
     }
 }

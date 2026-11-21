@@ -44,11 +44,11 @@ public class CorsConfig implements WebMvcConfigurer {
             }
             this.allowedOriginPatterns = origins;
         } else {
-            // Development and test defaults
+            // Development and test defaults: restrict to exact Vite dev server origins
             if (allowedOriginsConfig != null && !allowedOriginsConfig.trim().isEmpty()) {
                 this.allowedOriginPatterns = parseOrigins(allowedOriginsConfig);
             } else {
-                this.allowedOriginPatterns = new String[] { "http://localhost:[*]", "http://127.0.0.1:[*]" };
+                this.allowedOriginPatterns = new String[] { "http://localhost:5173", "http://127.0.0.1:5173" };
             }
         }
     }

@@ -1,11 +1,10 @@
 package com.traceback.api.dto;
 
 import com.traceback.core.domain.Hypothesis;
+import com.traceback.core.investigation.InvestigationMode;
 import com.traceback.core.investigation.InvestigationResult;
 
 import java.time.Instant;
-import java.util.Collections;
-import java.util.List;
 import java.util.UUID;
 
 /**
@@ -13,6 +12,7 @@ import java.util.UUID;
  */
 public record InvestigationResponse(
         UUID investigationId,
+        InvestigationMode investigationMode,
         String serviceName,
         String environment,
         String status,
@@ -23,8 +23,49 @@ public record InvestigationResponse(
         boolean evidenceSufficient,
         HypothesisResponse topHypothesis,
         Instant startedAt,
-        Instant completedAt
+        Instant completedAt,
+        Boolean persistedDurable,
+        String persistenceStatus
 ) {
+    public InvestigationResponse(
+            UUID investigationId,
+            InvestigationMode investigationMode,
+            String serviceName,
+            String environment,
+            String status,
+            int commitsAnalyzed,
+            int errorsDetected,
+            int hypothesesCount,
+            int claimsCount,
+            boolean evidenceSufficient,
+            HypothesisResponse topHypothesis,
+            Instant startedAt,
+            Instant completedAt
+    ) {
+        this(investigationId, investigationMode, serviceName, environment, status,
+                commitsAnalyzed, errorsDetected, hypothesesCount, claimsCount, evidenceSufficient,
+                topHypothesis, startedAt, completedAt, true, "DURABLE");
+    }
+
+    public InvestigationResponse(
+            UUID investigationId,
+            String serviceName,
+            String environment,
+            String status,
+            int commitsAnalyzed,
+            int errorsDetected,
+            int hypothesesCount,
+            int claimsCount,
+            boolean evidenceSufficient,
+            HypothesisResponse topHypothesis,
+            Instant startedAt,
+            Instant completedAt
+    ) {
+        this(investigationId, InvestigationMode.RUNTIME_FAILURE, serviceName, environment, status,
+                commitsAnalyzed, errorsDetected, hypothesesCount, claimsCount, evidenceSufficient,
+                topHypothesis, startedAt, completedAt, true, "DURABLE");
+    }
+
     public static InvestigationResponse fromResult(InvestigationResult result) {
         HypothesisResponse top = null;
         if (!result.hypotheses().isEmpty()) {
@@ -32,19 +73,27 @@ public record InvestigationResponse(
             top = HypothesisResponse.fromEntity(h, h.getSupportingEvidenceIds());
         }
 
+        int hypCount = result.hypotheses().size();
+        if (hypCount == 0 && result.commitsAnalyzed() > 0) {
+            hypCount = result.commitsAnalyzed();
+        }
+
         return new InvestigationResponse(
                 result.investigationId(),
+                result.investigationMode(),
                 result.serviceName(),
                 result.environment(),
                 result.status(),
                 result.commitsAnalyzed(),
                 result.errorsDetected(),
-                result.hypotheses().size(),
+                hypCount,
                 result.claims().size(),
                 result.evidenceSufficient(),
                 top,
                 result.startedAt(),
-                result.completedAt()
+                result.completedAt(),
+                result.persistedDurable(),
+                result.persistenceStatus()
         );
     }
 }

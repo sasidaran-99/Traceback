@@ -2,7 +2,7 @@ import React from 'react';
 
 interface BadgeProps {
   children: React.ReactNode;
-  variant?: 'neutral' | 'blue' | 'green' | 'amber' | 'rose' | 'purple';
+  variant?: 'neutral' | 'blue' | 'green' | 'amber' | 'rose' | 'purple' | 'orange';
   size?: 'sm' | 'md';
   className?: string;
   mono?: boolean;
@@ -16,12 +16,13 @@ export const Badge: React.FC<BadgeProps> = ({
   mono = false,
 }) => {
   const variantStyles = {
-    neutral: 'bg-dark-700/60 text-dark-300 border-dark-600',
-    blue: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
-    green: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
-    amber: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
-    rose: 'bg-rose-500/10 text-rose-400 border-rose-500/20',
-    purple: 'bg-purple-500/10 text-purple-400 border-purple-500/20',
+    neutral: 'bg-[#141A20] text-[#A7B0BC] border-[#2A323C]',
+    blue: 'bg-[#141A20] text-[#7FA3C4] border-[#7FA3C4]/30',
+    green: 'bg-[#141A20] text-[#4FA88A] border-[#4FA88A]/30',
+    amber: 'bg-[#141A20] text-[#C9A24A] border-[#C9A24A]/30',
+    rose: 'bg-[#141A20] text-[#C86A6A] border-[#C86A6A]/30',
+    purple: 'bg-[#141A20] text-[#7FA3C4] border-[#2A323C]',
+    orange: 'bg-[#141A20] text-[#C9A24A] border-[#C9A24A]/30',
   };
 
   const sizeStyles = {

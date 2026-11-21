@@ -5,39 +5,82 @@
 @layer base {
   :root {
     color-scheme: dark;
+    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --font-mono: 'JetBrains Mono', 'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
+
+    /* TraceBack 2.0 Neutral Graphite Design Tokens */
+    --bg-app: #0C1014;
+    --bg-sidebar: #0E1216;
+    --bg-surface: #141A20;
+    --bg-elevated: #1A2129;
+
+    --border-subtle: #1F262E;
+    --border-default: #2A323C;
+
+    --text-primary: #E4E8EE;
+    --text-secondary: #B0B8C4;
+    --text-muted: #828D9E;
+
+    --accent: #7FA3C4;
+    --action: #3A6C96;
+    --action-hover: #457CAB;
+
+    --success: #4FA88A;
+    --warning: #C9A24A;
+    --error: #C86A6A;
+    --verdict-insufficient: #7C8796;
+    --verdict-pending: #6E9CC4;
   }
 
   body {
-    @apply bg-dark-950 text-dark-100 antialiased font-sans min-h-screen;
+    background-color: #0C1014;
+    color: #E4E8EE;
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    min-height: 100vh;
+  }
+
+  /* Tabular numbers for scores, counts, hashes, timestamps */
+  .tabular-nums,
+  table,
+  code,
+  pre,
+  .font-mono {
+    font-variant-numeric: tabular-nums;
   }
 
   ::selection {
-    background-color: rgba(245, 158, 11, 0.3);
-    color: #fef3c7;
+    background-color: rgba(127, 163, 196, 0.25);
+    color: #E4E8EE;
   }
 
-  /* Custom scrollbar styling */
+  /* Neutral Graphite Scrollbar */
   ::-webkit-scrollbar {
     width: 6px;
     height: 6px;
   }
 
   ::-webkit-scrollbar-track {
-    background: #090d16;
+    background: #0C1014;
   }
 
   ::-webkit-scrollbar-thumb {
-    background: #1e293b;
+    background: #1F262E;
     border-radius: 3px;
   }
 
   ::-webkit-scrollbar-thumb:hover {
-    background: #334155;
+    background: #2A323C;
   }
 }
 
 @layer utilities {
-  .text-glow {
-    text-shadow: 0 0 12px rgba(56, 189, 248, 0.4);
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
   }
 }

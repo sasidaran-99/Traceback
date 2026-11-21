@@ -20,17 +20,17 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
 }) => {
   return (
     <div
-      className={`flex flex-col items-center justify-center p-8 text-center rounded-xl border border-dashed border-dark-700 bg-dark-900/40 ${className}`}
+      className={`flex flex-col items-center justify-center p-8 text-center rounded-xl border border-dashed border-[#2A323C] bg-[#141A20] font-sans ${className}`}
     >
-      <div className="p-3 rounded-xl bg-dark-800 text-dark-400 mb-3 border border-dark-700">
+      <div className="p-3 rounded-xl bg-[#1A2129] text-[#7FA3C4] mb-3 border border-[#2A323C]">
         <Icon className="w-6 h-6" />
       </div>
-      <h3 className="text-sm font-semibold text-dark-200 mb-1">{title}</h3>
-      <p className="text-xs text-dark-400 max-w-sm mb-4 leading-relaxed">{description}</p>
+      <h3 className="text-sm font-semibold text-[#E4E8EE] mb-1 font-sans">{title}</h3>
+      <p className="text-xs text-[#828D9E] max-w-sm mb-4 leading-relaxed font-sans">{description}</p>
       {actionLabel && onAction && (
         <button
           onClick={onAction}
-          className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium bg-brand-amber text-dark-950 hover:bg-amber-400 transition-colors shadow-sm"
+          className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-medium bg-[#3A6C96] text-white hover:bg-[#457CAB] transition-colors shadow-xs cursor-pointer font-sans"
         >
           {actionLabel}
         </button>

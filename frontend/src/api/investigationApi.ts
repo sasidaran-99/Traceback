@@ -1,4 +1,4 @@
-import { apiClient } from './client';
+import { apiClient, AGENT_INVESTIGATION_TIMEOUT_MS } from './client';
 import type {
   AgentInvestigationRequest,
   AgentInvestigationStep,
@@ -60,12 +60,17 @@ export const investigationApi = {
 
   /**
    * Launch an autonomous AI investigation (Phase 4 agent).
+   * Uses an extended timeout (210s) to accommodate backend Bifrost LLM execution.
    */
-  startAgentInvestigation: (request: AgentInvestigationRequest) =>
-    apiClient<InvestigationAgentReport>('/api/investigations/agent', {
-      method: 'POST',
-      body: JSON.stringify(request),
-    }),
+  startAgentInvestigation: (request: AgentInvestigationRequest, customTimeoutMs?: number) =>
+    apiClient<InvestigationAgentReport>(
+      '/api/investigations/agent',
+      {
+        method: 'POST',
+        body: JSON.stringify(request),
+      },
+      customTimeoutMs ?? AGENT_INVESTIGATION_TIMEOUT_MS
+    ),
 
   /**
    * Retrieve the AI agent report for an investigation.
